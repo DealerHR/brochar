@@ -3,13 +3,14 @@ import { NavLink, Outlet, useNavigate } from '../lib/router';
 import { useAuth } from '../contexts/AuthContext';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 import {
-  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap, ShieldCheck, KeyRound
+  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap, ShieldCheck, KeyRound, Inbox
 } from 'lucide-react';
 
 const navItems = [
   { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true, adminOnly: false },
   { to: '/admin/clients', label: 'Clients', icon: Users, end: false, adminOnly: false },
   { to: '/admin/analytics', label: 'Analytics', icon: BarChart2, end: false, adminOnly: false },
+  { to: '/admin/leads', label: 'Leads', icon: Inbox, end: false, adminOnly: false },
   { to: '/admin/team', label: 'Platform Team', icon: ShieldCheck, end: false, adminOnly: true },
 ];
 

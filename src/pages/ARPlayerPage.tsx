@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from '../lib/router';
-import { supabase, Brochure, BrochurePage, Hotspot, Product, Tenant } from '../lib/supabase';
+import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant } from '../lib/supabase';
+import BlockView from '../components/BlockView';
+import LinkOverlay from '../components/LinkOverlay';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR, MindARThree } from '../lib/mindar';
 import { ArSession } from '../lib/analytics';
 import { youtubeId, isHttpUrl } from '../lib/validation';
-import { Volume2, Play, X, AlertCircle, ChevronLeft } from 'lucide-react';
+import { Volume2, Play, X, AlertCircle, ChevronLeft, GraduationCap } from 'lucide-react';
 
 // Cross-browser fullscreen helpers
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,8 +56,10 @@ function hasVideo(h: Hotspot): boolean {
   return false;
 }
 
-export default function ARPlayerPage() {
+export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolean }) {
   const { tenantSlug, productSlug } = useParams();
+  // Where the visitor came from: ?src=qr is stamped by the QR codes the admin generates.
+  const source: 'qr' | 'link' | 'learn' = learnMode ? 'learn' : new URLSearchParams(window.location.search).get('src') === 'qr' ? 'qr' : 'link';
   const mindARRef = useRef<MindARThree | null>(null);
   // MindAR container lives OUTSIDE React's DOM tree, appended to body as position:fixed.
   // fixed + inset:0 guarantees full-viewport coverage; absolute children (video, canvas)
@@ -67,6 +71,8 @@ export default function ARPlayerPage() {
   const [brochure, setBrochure] = useState<Brochure | null>(null);
   const [pages, setPages] = useState<BrochurePage[]>([]);
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
+  const [blocks, setBlocks] = useState<Record<string, HotspotBlock[]>>({});
+  const [linkOverlay, setLinkOverlay] = useState<{ url: string; label: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMsg, setLoadingMsg] = useState('Loading experience...');
   const [loadProgress, setLoadProgress] = useState(0);
@@ -163,6 +169,13 @@ export default function ARPlayerPage() {
       : { data: [] as Hotspot[] };
     setPages(pg ?? []);
     setHotspots(hs ?? []);
+    const hotspotIds = (hs ?? []).map(h => h.id);
+    if (hotspotIds.length) {
+      const { data: bl } = await supabase.from('hotspot_blocks').select('*').in('hotspot_id', hotspotIds).order('position');
+      const map: Record<string, HotspotBlock[]> = {};
+      for (const b of (bl ?? []) as HotspotBlock[]) (map[b.hotspot_id] ??= []).push(b);
+      setBlocks(map);
+    }
 
     setLoading(false);
     setLoadingMsg('');
@@ -191,7 +204,7 @@ export default function ARPlayerPage() {
       await loadScript(MINDAR_CDN + 'mindar-image-three.prod.js');
       setLoadProgress(60);
 
-      const session = new ArSession(brochure.id);
+      const session = new ArSession(brochure.id, source);
       sessionRef.current = session;
 
       setLoadingMsg('Fetching targets...');
@@ -467,6 +480,15 @@ export default function ARPlayerPage() {
     if (popup) sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id);
   }
 
+  async function submitLead(lead: { name: string; phone: string; message: string; hotspotId: string }) {
+    if (!brochure) throw new Error('Not ready');
+    const { error } = await supabase.from('leads').insert({
+      brochure_id: brochure.id, hotspot_id: lead.hotspotId, session_id: sessionRef.current?.sessionId ?? null,
+      name: lead.name, phone: lead.phone, message: lead.message || null, source,
+    });
+    if (error) throw new Error('Could not send. Please try again.');
+  }
+
   function closePopup() {
     // The browser fires a synthetic click ~300ms after touchend. If that click lands on
     // the backdrop (which appears the moment the popup opens), it immediately closes the
@@ -500,6 +522,15 @@ export default function ARPlayerPage() {
   return (
     <>
       {/* Back / close button — always visible while AR is running */}
+      {linkOverlay && <LinkOverlay url={linkOverlay.url} label={linkOverlay.label} brandColor={brandColor} onClose={() => setLinkOverlay(null)} />}
+
+      {started && learnMode && !popup && (
+        <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 50 }}
+          className="inline-flex items-center gap-1.5 bg-amber-400 text-amber-950 text-xs font-black px-3 py-1.5 rounded-full shadow-lg select-none">
+          <GraduationCap className="w-3.5 h-3.5" /> Learn mode
+        </div>
+      )}
+
       {started && !popup && (
         <button
           onClick={exitAR}
@@ -548,7 +579,7 @@ export default function ARPlayerPage() {
           <h1 className="text-white font-bold text-xl mb-1">{product?.name ?? 'AR Experience'}</h1>
           <p className="text-slate-400 text-sm mb-2">{tenant?.name}</p>
           <p className="text-slate-500 text-xs mb-8 text-center max-w-xs">
-            Point your camera at the printed brochure to discover interactive AR hotspots
+            {learnMode ? 'Learn mode: scan the brochure to see the pitch, objections and quick checks for each feature.' : 'Point your camera at the printed brochure to discover interactive AR hotspots'}
           </p>
           <button onClick={startAR}
             className="text-white font-semibold px-8 py-3.5 rounded-full text-sm shadow-lg transition active:scale-95"
@@ -635,6 +666,21 @@ export default function ARPlayerPage() {
                       className="w-full h-full"
                     />
                   )}
+                </div>
+              )}
+
+              {(blocks[popup.hotspot.id] ?? []).length > 0 && (
+                <div className="mt-4 space-y-3">
+                  {(blocks[popup.hotspot.id] ?? []).map(b => (
+                    <BlockView key={b.id} block={b} tenant={tenant!} brandColor={brandColor} learnMode={learnMode}
+                      onLinkOpen={(url, label, mode) => {
+                        if (mode === 'newtab') window.open(url, '_blank', 'noopener');
+                        else setLinkOverlay({ url, label });
+                      }}
+                      onLead={submitLead}
+                      onMedia={() => sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id)}
+                    />
+                  ))}
                 </div>
               )}
             </div>

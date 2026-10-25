@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from '../../lib/router';
-import { supabase, Brochure, BrochurePage, Hotspot, Product, Tenant } from '../../lib/supabase';
+import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, ActionData } from '../../lib/supabase';
+import BlockEditor from '../../components/BlockEditor';
+import QrModal from '../../components/QrModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR } from '../../lib/mindar';
 import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../../lib/storage';
 import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
 import {
   ArrowLeft, Upload, FileImage, Trash2, Plus, X, Volume2, Video, Save,
-  Zap, CheckCircle2, FilePlus, ExternalLink, ImageIcon, AlertTriangle, Lock
+  Zap, CheckCircle2, FilePlus, ExternalLink, ImageIcon, AlertTriangle, Lock, QrCode, GraduationCap
 } from 'lucide-react';
 
 type HotspotForm = {
@@ -39,6 +41,8 @@ export default function ProductBuilderPage() {
   const [brochure, setBrochure] = useState<Brochure | null>(null);
   const [pages, setPages] = useState<BrochurePage[]>([]);
   const [hotspots, setHotspots] = useState<Record<string, Hotspot[]>>({});
+  const [blocks, setBlocks] = useState<Record<string, HotspotBlock[]>>({});
+  const [editBlocks, setEditBlocks] = useState<HotspotBlock[]>([]);
   const [selectedPage, setSelectedPage] = useState<BrochurePage | null>(null);
   const [selectedHotspot, setSelectedHotspot] = useState<Hotspot | null>(null);
   const [hotspotForm, setHotspotForm] = useState<HotspotForm | null>(null);
@@ -53,6 +57,7 @@ export default function ProductBuilderPage() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [hotspotImageFile, setHotspotImageFile] = useState<File | null>(null);
   const [notice, setNotice] = useState('');
+  const [showQr, setShowQr] = useState(false);
   const imageRef = useRef<HTMLDivElement>(null);
   const pageFileInputRef = useRef<HTMLInputElement>(null);
   // Tracks drag state without causing re-renders on every mousemove
@@ -100,6 +105,18 @@ export default function ProductBuilderPage() {
       map[h.page_id].push(h);
     }
     setHotspots(map);
+    const hotspotIds = (data ?? []).map(h => h.id);
+    if (hotspotIds.length) {
+      const { data: bl } = await supabase.from('hotspot_blocks').select('*').in('hotspot_id', hotspotIds).order('position');
+      const bmap: Record<string, HotspotBlock[]> = {};
+      for (const b of (bl ?? []) as HotspotBlock[]) {
+        if (!bmap[b.hotspot_id]) bmap[b.hotspot_id] = [];
+        bmap[b.hotspot_id].push(b);
+      }
+      setBlocks(bmap);
+    } else {
+      setBlocks({});
+    }
   }
 
   async function ensureBrochure(): Promise<Brochure> {
@@ -213,6 +230,7 @@ export default function ProductBuilderPage() {
 
   function openHotspot(h: Hotspot) {
     setSelectedHotspot(h);
+    setEditBlocks(blocks[h.id] ?? []);
     setAudioFile(null);
     setVideoFile(null);
     setHotspotImageFile(null);
@@ -278,6 +296,18 @@ export default function ProductBuilderPage() {
     if (hotspotForm.video_type === 'youtube' && !youtubeId(hotspotForm.video_ref)) {
       setNotice('Paste a valid YouTube link or video id.'); return;
     }
+    for (const b of editBlocks) {
+      const d = b.data as Record<string, unknown>;
+      if (b.kind === 'link' && !/^https?:\/\//.test(String(d.url ?? ''))) { setNotice('Web link blocks need an address starting with http:// or https://'); return; }
+      if (b.kind === 'pdf' && !/^https?:\/\//.test(String(d.url ?? ''))) { setNotice('Upload a PDF or paste its web address.'); return; }
+      if (b.kind === 'quiz') {
+        const opts = (d.options as string[]).map(o => o.trim());
+        if (!String(d.question ?? '').trim() || opts.filter(Boolean).length < 2) { setNotice('Quiz blocks need a question and at least two options.'); return; }
+      }
+      if (b.kind === 'action' && (d as ActionData).type !== 'enquiry' && !(d as ActionData).phone && !tenant?.whatsapp_number && !tenant?.phone_number) {
+        setNotice('Contact buttons need a number here, or a default number on the client page.'); return;
+      }
+    }
     const sizeProblem =
       (audioFile && fileTooLarge(audioFile, MAX_AUDIO_BYTES)) ||
       (videoFile && fileTooLarge(videoFile, MAX_VIDEO_BYTES)) ||
@@ -321,6 +351,18 @@ export default function ProductBuilderPage() {
     };
     const { error } = await supabase.from('hotspots').update(payload).eq('id', selectedHotspot.id);
     if (error) { setNotice(error.message); setSavingHotspot(false); return; }
+
+    // Content blocks: remove the ones deleted in the editor, upsert the rest in order.
+    const before = blocks[selectedHotspot.id] ?? [];
+    const keepIds = new Set(editBlocks.map(b => b.id));
+    const removed = before.filter(b => !keepIds.has(b.id)).map(b => b.id);
+    if (removed.length) await supabase.from('hotspot_blocks').delete().in('id', removed);
+    if (editBlocks.length) {
+      const rows = editBlocks.map((b, i) => ({ id: b.id, hotspot_id: selectedHotspot.id, kind: b.kind, position: i, data: b.data }));
+      const { error: bErr } = await supabase.from('hotspot_blocks').upsert(rows, { onConflict: 'id' });
+      if (bErr) { setNotice(`Saved hotspot, but blocks failed: ${bErr.message}`); setSavingHotspot(false); return; }
+    }
+    setBlocks(prev => ({ ...prev, [selectedHotspot.id]: editBlocks.map((b, i) => ({ ...b, position: i })) }));
     // Remove files the user cleared from the form.
     await removeFiles([
       selectedHotspot.audio_url && !payload.audio_url ? pathFromPublicUrl(selectedHotspot.audio_url) : null,
@@ -341,10 +383,16 @@ export default function ProductBuilderPage() {
   }
 
   function hotspotFilePaths(h: Hotspot) {
+    const blockFiles = (blocks[h.id] ?? []).flatMap(b => {
+      if (b.kind === 'gallery') return (b.data as { images: string[] }).images.map(pathFromPublicUrl);
+      if (b.kind === 'pdf') return [pathFromPublicUrl((b.data as { url: string }).url)];
+      return [];
+    });
     return [
       h.audio_type === 'upload' ? pathFromPublicUrl(h.audio_url) : null,
       h.video_type === 'upload' ? pathFromPublicUrl(h.video_ref) : null,
       pathFromPublicUrl(h.image_url),
+      ...blockFiles,
     ];
   }
 
@@ -463,6 +511,20 @@ export default function ProductBuilderPage() {
           <span className={`text-xs px-2.5 py-1 rounded-full font-bold border uppercase tracking-wide ${statusColors[brochure.status]}`}>
             {brochure.status}
           </span>
+        )}
+        {tenant && product && (
+          <>
+            {showQr && <QrModal tenant={tenant} product={product} onClose={() => setShowQr(false)} />}
+            <button onClick={() => setShowQr(true)}
+              className="inline-flex items-center gap-1.5 bg-white border-2 border-slate-200 hover:border-brand-navy text-slate-600 hover:text-brand-navy text-xs font-bold px-3 py-2 rounded-xl transition">
+              <QrCode className="w-3.5 h-3.5" /> QR & links
+            </button>
+            <a href={`/${tenant.slug}/${product.slug}/learn`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 bg-amber-50 border-2 border-amber-200 hover:border-amber-400 text-amber-800 text-xs font-bold px-3 py-2 rounded-xl transition"
+              title="Open learn mode (pitch, objections, quick checks)">
+              <GraduationCap className="w-3.5 h-3.5" /> Learn mode
+            </a>
+          </>
         )}
 
         {editable && <div className="flex items-center gap-2 flex-wrap">
@@ -618,7 +680,7 @@ export default function ProductBuilderPage() {
 
         {/* Right: hotspot editor */}
         {selectedHotspot && hotspotForm && (
-          <div className="w-80 flex-shrink-0 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-y-auto">
+          <div className="w-96 flex-shrink-0 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-y-auto">
             <div className="flex items-center justify-between p-4 border-b border-slate-100">
               <span className="font-black text-brand-navy text-sm">Hotspot Editor</span>
               <button onClick={() => { setSelectedHotspot(null); setHotspotForm(null); }} className="text-slate-400 hover:text-brand-navy transition">
@@ -772,6 +834,16 @@ export default function ProductBuilderPage() {
                   <input type="file" accept="image/*" className="hidden"
                     onChange={e => setHotspotImageFile(e.target.files?.[0] ?? null)} />
                 </label>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100">
+                <BlockEditor
+                  hotspotId={selectedHotspot.id}
+                  blocks={editBlocks}
+                  onChange={setEditBlocks}
+                  storageBase={`${clientId}/${productId}`}
+                  onError={setNotice}
+                />
               </div>
 
               {editable && <div className="flex gap-2 pt-2">

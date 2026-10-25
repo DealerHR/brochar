@@ -5,7 +5,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { uploadFile, fileExtension, removeFolder, pathFromPublicUrl, removeFiles } from '../../lib/storage';
 import { slugError, hexColorError, fileTooLarge, MAX_IMAGE_BYTES, toSlug } from '../../lib/validation';
 import TenantTeam from '../../components/TenantTeam';
-import { ArrowLeft, Plus, Package, Pencil, ExternalLink, Upload, X, Check, Trash2 } from 'lucide-react';
+import QrModal from '../../components/QrModal';
+import { ArrowLeft, Plus, Package, Pencil, ExternalLink, Upload, X, Check, Trash2, QrCode } from 'lucide-react';
 
 export default function ClientDetailPage() {
   const { clientId } = useParams();
@@ -17,12 +18,13 @@ export default function ClientDetailPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: '', slug: '', brand_color: '#C41E3A', description: '', is_active: true });
+  const [form, setForm] = useState({ name: '', slug: '', brand_color: '#C41E3A', description: '', is_active: true, whatsapp_number: '', phone_number: '', enquiry_email: '' });
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState('');
   const [saving, setSaving] = useState(false);
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [qrProduct, setQrProduct] = useState<Product | null>(null);
 
   useEffect(() => { load(); }, [clientId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -33,7 +35,10 @@ export default function ClientDetailPage() {
     ]);
     if (t) {
       setTenant(t);
-      setForm({ name: t.name, slug: t.slug, brand_color: t.brand_color, description: t.description ?? '', is_active: t.is_active });
+      setForm({
+        name: t.name, slug: t.slug, brand_color: t.brand_color, description: t.description ?? '', is_active: t.is_active,
+        whatsapp_number: t.whatsapp_number ?? '', phone_number: t.phone_number ?? '', enquiry_email: t.enquiry_email ?? '',
+      });
     }
     setProducts(p ?? []);
     setLoading(false);
@@ -51,7 +56,12 @@ export default function ClientDetailPage() {
         logo_url = await uploadFile(`tenants/${tenant.id}/logo.${fileExtension(logoFile, 'jpg')}`, logoFile);
       }
       const { error: err } = await supabase.from('tenants')
-        .update({ ...form, name: form.name.trim(), description: form.description.trim() || null, logo_url }).eq('id', tenant.id);
+        .update({
+          ...form, name: form.name.trim(), description: form.description.trim() || null, logo_url,
+          whatsapp_number: form.whatsapp_number.replace(/[^0-9+]/g, '') || null,
+          phone_number: form.phone_number.replace(/[^0-9+]/g, '') || null,
+          enquiry_email: form.enquiry_email.trim() || null,
+        }).eq('id', tenant.id);
       if (err) throw err.code === '23505' ? new Error('That slug is already used by another client.') : err;
       await load();
       setEditing(false);
@@ -87,6 +97,7 @@ export default function ClientDetailPage() {
   return (
     <div>
       {error && <div className="mb-4 p-3.5 bg-brand-cerise/5 border border-brand-cerise/20 rounded-xl text-brand-cerise text-sm font-medium">{error}</div>}
+      {qrProduct && <QrModal tenant={tenant} product={qrProduct} onClose={() => setQrProduct(null)} />}
       <button onClick={() => navigate('/admin/clients')}
         className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
         <ArrowLeft className="w-4 h-4" /> All Clients
@@ -126,6 +137,24 @@ export default function ClientDetailPage() {
                 </div>
                 <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                   className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full resize-none focus:outline-none focus:border-brand-navy" rows={2} />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 mb-1">WhatsApp number</label>
+                    <input value={form.whatsapp_number} onChange={e => setForm(f => ({ ...f, whatsapp_number: e.target.value }))} placeholder="+91 98765 43210"
+                      className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full focus:outline-none focus:border-brand-navy" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Phone number</label>
+                    <input value={form.phone_number} onChange={e => setForm(f => ({ ...f, phone_number: e.target.value }))} placeholder="+91 ..."
+                      className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full focus:outline-none focus:border-brand-navy" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Enquiry email</label>
+                    <input value={form.enquiry_email} onChange={e => setForm(f => ({ ...f, enquiry_email: e.target.value }))} placeholder="sales@client.com"
+                      className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full focus:outline-none focus:border-brand-navy" />
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-400">Used by Contact buttons on hotspots unless a button sets its own number.</p>
                 <div className="flex items-center gap-3">
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} className="sr-only peer" />
@@ -154,6 +183,13 @@ export default function ClientDetailPage() {
                 </div>
                 <p className="text-sm text-slate-400 font-mono">/{tenant.slug}</p>
                 {tenant.description && <p className="text-sm text-slate-500 mt-1">{tenant.description}</p>}
+                {(tenant.whatsapp_number || tenant.phone_number) && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    {tenant.whatsapp_number && <>WhatsApp {tenant.whatsapp_number}</>}
+                    {tenant.whatsapp_number && tenant.phone_number && ' · '}
+                    {tenant.phone_number && <>Phone {tenant.phone_number}</>}
+                  </p>
+                )}
                 <div className="flex items-center gap-4 mt-3">
                   {manageable && (
                     <button onClick={() => setEditing(true)}
@@ -217,6 +253,13 @@ export default function ClientDetailPage() {
                   {product.description && <p className="text-xs text-slate-400 line-clamp-2">{product.description}</p>}
                 </div>
               </Link>
+              <button
+                onClick={e => { e.preventDefault(); setQrProduct(product); }}
+                className="absolute top-2 right-12 w-7 h-7 rounded-full bg-white/90 border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-brand-navy hover:border-brand-navy/40 transition opacity-0 group-hover:opacity-100"
+                title="QR code"
+              >
+                <QrCode className="w-3.5 h-3.5" />
+              </button>
               {editable && <button
                 onClick={e => { e.preventDefault(); handleDeleteProduct(product); }}
                 disabled={deletingProductId === product.id}

@@ -6,7 +6,7 @@ import { Calendar, TrendingUp, Target, MousePointerClick, Cpu, PlayCircle } from
 
 type DailyStat = { date: string; sessions: number; detections: number; taps: number; plays: number };
 type ProductRow = { product_id: string; product_name: string; tenant_name: string; sessions: number; detections: number; taps: number; plays: number };
-type EventRow = { event_type: string; date_key: string; product_id: string | null; tenant_id: string | null; session_id: string | null };
+type EventRow = { event_type: string; date_key: string; product_id: string | null; tenant_id: string | null; session_id: string | null; source: string | null; platform: string | null };
 
 function daysAgo(n: number) {
   const d = new Date();
@@ -25,6 +25,8 @@ export default function AnalyticsPage() {
   const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sources, setSources] = useState<Record<string, number>>({});
+  const [platforms, setPlatforms] = useState<Record<string, number>>({});
 
   const ownTenantIds = memberships.map(m => m.tenant_id);
 
@@ -46,7 +48,7 @@ export default function AnalyticsPage() {
     // ar_events carries tenant_id and product_id directly (stamped by the database),
     // so one query answers every filter. RLS limits rows to tenants the user can view.
     let q = supabase.from('ar_events')
-      .select('event_type, date_key, product_id, tenant_id, session_id')
+      .select('event_type, date_key, product_id, tenant_id, session_id, source, platform')
       .gte('date_key', dateFrom).lte('date_key', dateTo).limit(50000);
     if (productFilter) q = q.eq('product_id', productFilter);
     else if (tenantFilter) q = q.eq('tenant_id', tenantFilter);
@@ -66,6 +68,13 @@ export default function AnalyticsPage() {
       bump(byDate[ev.date_key], ev.event_type);
     }
     setDailyStats(Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)));
+
+    const src: Record<string, number> = {}; const plat: Record<string, number> = {};
+    for (const ev of events) if (ev.event_type === 'session_start') {
+      src[ev.source ?? 'link'] = (src[ev.source ?? 'link'] ?? 0) + 1;
+      plat[ev.platform ?? 'other'] = (plat[ev.platform ?? 'other'] ?? 0) + 1;
+    }
+    setSources(src); setPlatforms(plat);
 
     const productIds = [...new Set(events.map(e => e.product_id).filter((x): x is string => !!x))];
     if (productIds.length === 0) { setProductRows([]); setLoading(false); return; }
@@ -140,6 +149,28 @@ export default function AnalyticsPage() {
           </div>
         ))}
       </div>
+
+      {totals.sessions > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          {[{ title: 'Sessions by source', data: sources, labels: { qr: 'QR scan', link: 'Shared link', learn: 'Learn mode' } as Record<string, string> },
+            { title: 'Sessions by device', data: platforms, labels: { ios: 'iPhone / iPad', android: 'Android', desktop: 'Desktop', other: 'Other' } as Record<string, string> }].map(card => (
+            <div key={card.title} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+              <h2 className="text-sm font-black text-brand-navy mb-3 uppercase tracking-wide">{card.title}</h2>
+              <div className="space-y-2">
+                {Object.entries(card.data).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                  <div key={k} className="flex items-center gap-3 text-sm">
+                    <span className="w-28 text-slate-500 font-medium">{card.labels[k] ?? k}</span>
+                    <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-2 rounded-full bg-brand-navy" style={{ width: `${Math.round((v / totals.sessions) * 100)}%` }} />
+                    </div>
+                    <span className="w-16 text-right font-bold text-brand-navy">{v} <span className="text-slate-400 font-medium text-xs">({Math.round((v / totals.sessions) * 100)}%)</span></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl border border-slate-100 p-5 mb-6 shadow-sm">
         <h2 className="text-sm font-black text-brand-navy mb-4 uppercase tracking-wide">Daily Sessions</h2>

@@ -11,6 +11,7 @@ import NewProductPage from './pages/admin/NewProductPage';
 import ProductBuilderPage from './pages/admin/ProductBuilderPage';
 import AnalyticsPage from './pages/admin/AnalyticsPage';
 import TeamPage from './pages/admin/TeamPage';
+import LeadsPage from './pages/admin/LeadsPage';
 import ClientLandingPage from './pages/ClientLandingPage';
 import ARPlayerPage from './pages/ARPlayerPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
@@ -62,12 +63,14 @@ export default function App() {
             <Route path="clients/:clientId/products/new" element={<NewProductPage />} />
             <Route path="clients/:clientId/products/:productId" element={<ProductBuilderPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="leads" element={<LeadsPage />} />
             <Route path="team" element={<TeamPage />} />
           </Route>
 
           {/* Public client pages */}
           <Route path="/:tenantSlug" element={<ClientLandingPage />} />
           <Route path="/:tenantSlug/:productSlug" element={<ARPlayerPage />} />
+          <Route path="/:tenantSlug/:productSlug/learn" element={<ARPlayerPage learnMode />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

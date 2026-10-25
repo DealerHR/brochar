@@ -34,7 +34,7 @@ export class ArSession {
   readonly platform = detectPlatform();
   private seenPages = new Set<string>();
 
-  constructor(private brochureId: string) {}
+  constructor(private brochureId: string, private source: 'qr' | 'link' | 'learn' = 'link') {}
 
   private send(event_type: ArEventType, extra: { page_id?: string; hotspot_id?: string } = {}) {
     void supabase
@@ -43,6 +43,7 @@ export class ArSession {
         brochure_id: this.brochureId,
         session_id: this.sessionId,
         platform: this.platform,
+        source: this.source,
         event_type,
         ...extra,
       })
