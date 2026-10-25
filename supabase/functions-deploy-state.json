@@ -1,0 +1,13 @@
+{
+  "projectId": "67497401",
+  "functions": {
+    "ask": {
+      "hasChanged": false,
+      "hash": "f6fcc24d4c64382eff5cf7aeb4bfe86c06bd13a808eb3bb6e09da6305d56699f"
+    },
+    "create-user": {
+      "hasChanged": false,
+      "hash": "94e1b2f0c42279ab500a825d8ff3666908700c6e70a6432c98fc6bc03f113e80"
+    }
+  }
+}
