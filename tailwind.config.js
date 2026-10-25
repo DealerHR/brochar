@@ -32,5 +32,9 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // `land:` applies when the player sets data-orient="landscape" from the real
+    // device orientation; the CSS orientation media query is unreliable in fullscreen.
+    function ({ addVariant }) { addVariant('land', '[data-orient="landscape"] &'); },
+  ],
 };

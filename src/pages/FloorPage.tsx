@@ -11,8 +11,7 @@ import LinkOverlay from '../components/LinkOverlay';
 import PdfOverlay from '../components/PdfOverlay';
 import AskCard from '../components/AskCard';
 import {
-  AlertCircle, Camera, Mic, LayoutGrid, X, ChevronLeft, Share2, Video, Image as ImageIcon, FileText, Link as LinkIcon,
-  Music, ListChecks, Check, RefreshCw, ScanSearch,
+  AlertCircle, Camera, Mic, LayoutGrid, X, ChevronLeft, Share2, Check, RefreshCw, ScanSearch,
 } from 'lucide-react';
 
 /*
@@ -38,17 +37,14 @@ async function enterFullscreen() {
   } catch { /* refused or unsupported */ }
 }
 
-const kindIcon = (kind?: HotspotBlock['kind']) => {
-  switch (kind) {
-    case 'video': return Video;
-    case 'image': case 'gallery': return ImageIcon;
-    case 'pdf': case 'spec_table': return FileText;
-    case 'link': return LinkIcon;
-    case 'audio': return Music;
-    case 'quiz': return ListChecks;
-    default: return FileText;
-  }
-};
+// Physical orientation; the CSS orientation media query misreports in fullscreen on some phones.
+function readIsLandscape(): boolean {
+  const so = (screen as Screen & { orientation?: { type?: string } }).orientation;
+  if (so?.type) return so.type.startsWith('landscape');
+  if (window.matchMedia) return window.matchMedia('(orientation: landscape)').matches;
+  return window.innerWidth > window.innerHeight;
+}
+
 
 export default function FloorPage() {
   const { tenantSlug } = useParams();
@@ -81,6 +77,7 @@ export default function FloorPage() {
   const [relooking, setRelooking] = useState(false);
   // Pull-up list of every feature, used when the tiles are filtered to one side.
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isLandscape, setIsLandscape] = useState(readIsLandscape());
 
   const brandColor = tenant?.brand_color ?? '#0A2463';
   const askEnabled = !!tenant && tenant.assistant_scope !== 'off';
@@ -90,6 +87,11 @@ export default function FloorPage() {
   useEffect(() => {
     const prevBody = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    const onRotate = () => setIsLandscape(readIsLandscape());
+    window.addEventListener('orientationchange', onRotate);
+    window.addEventListener('resize', onRotate);
+    const so = (screen as Screen & { orientation?: EventTarget }).orientation;
+    so?.addEventListener?.('change', onRotate);
     (async () => {
       const { data: t } = await supabase.from('tenants').select('*').eq('slug', tenantSlug!).eq('is_active', true).maybeSingle();
       if (!t) { setError('Showroom not found.'); setPhase('error'); return; }
@@ -101,6 +103,9 @@ export default function FloorPage() {
     })();
     return () => {
       document.body.style.overflow = prevBody;
+      window.removeEventListener('orientationchange', onRotate);
+      window.removeEventListener('resize', onRotate);
+      so?.removeEventListener?.('change', onRotate);
       stopCamera();
       window.speechSynthesis?.cancel();
       if (autoOpenTimer.current) clearTimeout(autoOpenTimer.current);
@@ -312,10 +317,10 @@ export default function FloorPage() {
   );
 
   return (
-    <div className="fixed inset-0 bg-black overflow-hidden select-none" onClickCapture={firstTap} onTouchEnd={firstTap}>
+    <div className="fixed inset-0 bg-black overflow-hidden select-none" data-orient={isLandscape ? 'landscape' : 'portrait'} onClickCapture={firstTap} onTouchEnd={firstTap}>
       {/* Live camera */}
       <video ref={videoRef} playsInline muted autoPlay className="absolute inset-0 w-full h-full object-cover" />
-      {product && <div className="absolute inset-0 bg-slate-950/60" />}
+      {product && <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/70 pointer-events-none" />}
 
       {/* Loading / denied */}
       {phase === 'loading' && (
@@ -354,8 +359,8 @@ export default function FloorPage() {
           {/* Framing guide */}
           {!recognising && !result && !resultError && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-[78vw] max-w-sm aspect-[4/3] landscape:w-auto landscape:h-[62vh] landscape:max-w-none rounded-3xl border-2 border-white/40" />
-              <p className="absolute bottom-[10.5rem] landscape:bottom-6 landscape:right-36 text-white/90 text-sm font-semibold drop-shadow">Point at the product and tap</p>
+              <div className="w-[78vw] max-w-sm aspect-[4/3] land:w-auto land:h-[62vh] land:max-w-none rounded-3xl border-2 border-white/40" />
+              <p className="absolute bottom-[10.5rem] land:bottom-6 land:right-36 text-white/90 text-sm font-semibold drop-shadow">Point at the product and tap</p>
             </div>
           )}
 
@@ -367,19 +372,19 @@ export default function FloorPage() {
           )}
 
           {/* Bottom controls */}
-          <div className="absolute bottom-0 left-0 right-0 pb-7 pt-10 bg-gradient-to-t from-black/70 to-transparent landscape:top-0 landscape:left-auto landscape:w-32 landscape:pt-0 landscape:pb-0 landscape:bg-gradient-to-l landscape:flex landscape:flex-col landscape:justify-center">
+          <div className="absolute bottom-0 left-0 right-0 pb-7 pt-10 bg-gradient-to-t from-black/70 to-transparent land:top-0 land:left-auto land:w-32 land:pt-0 land:pb-0 land:bg-gradient-to-l land:flex land:flex-col land:justify-center">
             {lastSlug && !result && !resultError && (() => {
               const lp = products.find(p => p.slug === lastSlug);
               return lp ? (
-                <div className="flex justify-center mb-4 landscape:absolute landscape:bottom-4 landscape:left-0 landscape:right-0 landscape:mb-0">
-                  <button onClick={() => openProduct(lp)} className="inline-flex items-center gap-2 bg-white/15 backdrop-blur text-white text-xs font-bold px-4 py-2 rounded-full border border-white/20 landscape:max-w-[7.5rem] landscape:truncate">
+                <div className="flex justify-center mb-4 land:absolute land:bottom-4 land:left-0 land:right-0 land:mb-0">
+                  <button onClick={() => openProduct(lp)} className="inline-flex items-center gap-2 bg-white/15 backdrop-blur text-white text-xs font-bold px-4 py-2 rounded-full border border-white/20 land:max-w-[7.5rem] land:truncate">
                     <RefreshCw className="w-3.5 h-3.5 flex-shrink-0" /> <span className="truncate">Continue with {lp.name}</span>
                   </button>
                 </div>
               ) : null;
             })()}
-            <div className="grid grid-cols-3 items-center px-8 landscape:flex landscape:flex-col landscape:gap-6 landscape:px-0">
-              <div className="landscape:hidden" />
+            <div className="grid grid-cols-3 items-center px-8 land:flex land:flex-col land:gap-6 land:px-0">
+              <div className="land:hidden" />
               <div className="flex justify-center">
                 <button onClick={shoot} disabled={recognising} aria-label="Recognise product"
                   className="w-[76px] h-[76px] rounded-full bg-white/20 border-[3px] border-white flex items-center justify-center active:scale-95 transition disabled:opacity-50">
@@ -388,7 +393,7 @@ export default function FloorPage() {
                   </span>
                 </button>
               </div>
-              <div className="flex justify-end landscape:justify-center">
+              <div className="flex justify-end land:justify-center">
                 <button onClick={() => setShowGrid(true)} aria-label="Choose from list"
                   className="w-12 h-12 rounded-full bg-black/50 border border-white/25 flex items-center justify-center text-white active:scale-95">
                   <LayoutGrid className="w-5 h-5" />
@@ -399,8 +404,8 @@ export default function FloorPage() {
 
           {/* Result sheet */}
           {(result || resultError) && (
-            <div className="absolute inset-x-0 bottom-0 z-20 p-3 landscape:inset-y-0 landscape:left-auto landscape:right-0 landscape:w-[46vw] landscape:max-w-md landscape:flex landscape:items-center">
-              <div className="bg-white rounded-3xl shadow-2xl p-4 animate-card-in landscape:w-full landscape:max-h-[92vh] landscape:overflow-y-auto">
+            <div className="absolute inset-x-0 bottom-0 z-20 p-3 land:inset-y-0 land:left-auto land:right-0 land:w-[46vw] land:max-w-md land:flex land:items-center">
+              <div className="bg-white rounded-3xl shadow-2xl p-4 animate-card-in land:w-full land:max-h-[92vh] land:overflow-y-auto">
                 {resultError ? (
                   <>
                     <p className="text-sm font-bold text-slate-800 mb-1">Could not recognise it</p>
@@ -451,108 +456,103 @@ export default function FloorPage() {
       )}
 
       {/* Product mode */}
-      {product && (
-        <div className="absolute inset-0 flex flex-col">
-          <div className="flex items-center gap-2 p-3 pt-4">
-            <button onClick={closeProduct} aria-label="Change product"
-              className="w-11 h-11 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white active:scale-95">
-              <ChevronLeft className="w-6 h-6" />
-            </button>
-            <div className="flex-1 min-w-0">
-              <p className="text-white font-black text-base leading-tight truncate">{product.name}</p>
-              <p className="text-white/60 text-[11px] truncate">{view !== 'any' ? `Looking at: ${viewLabel(view)}` : 'Tap a feature to show it'}</p>
-            </div>
-            <button onClick={relook} disabled={relooking} aria-label="Look again"
-              className="w-11 h-11 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white active:scale-95 disabled:opacity-50">
-              {relooking ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <ScanSearch className="w-5 h-5" />}
-            </button>
-            <button onClick={() => setShareOpen(true)} aria-label="Send to customer"
-              className="w-11 h-11 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white active:scale-95">
-              <Share2 className="w-5 h-5" />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-3 pb-28 landscape:pb-20 landscape:px-4 overscroll-contain">
-            {!bundle && !bundleError && (
-              <div className="flex justify-center pt-16"><div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" /></div>
-            )}
-            {bundleError && <p className="text-white/70 text-sm text-center pt-16">{bundleError}</p>}
-            {bundle && bundle.hotspots.length === 0 && <p className="text-white/70 text-sm text-center pt-16">No features added yet.</p>}
-            {bundle && bundle.hotspots.length > 0 && (() => {
-              const numberOf = new Map(bundle.hotspots.map((h, i) => [h.id, i + 1]));
-              const here = view === 'any' ? [] : bundle.hotspots.filter(h => h.view === view);
-              const rest = view === 'any' ? bundle.hotspots : bundle.hotspots.filter(h => h.view !== view);
-              const tile = (h: Hotspot) => {
-                const blocks = bundle.blocks[h.id] ?? [];
-                const main = blocks.find(b => b.kind === 'video') ?? blocks.find(b => b.kind !== 'text') ?? blocks[0];
-                const Icon = kindIcon(main?.kind);
-                const hasTeam = blocks.some(b => b.audience === 'team');
-                const thumb = blocks.find(b => b.kind === 'image')?.data as { url?: string } | undefined;
-                return (
-                  <button key={h.id} onClick={() => tapHotspot(h)}
-                    className="relative text-left rounded-2xl overflow-hidden bg-white/10 border border-white/15 active:scale-[0.98] transition min-h-[118px] flex flex-col justify-end p-3">
-                    {thumb?.url && <img src={thumb.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-40" />}
-                    <div className="relative">
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[11px] font-black" style={{ backgroundColor: h.dot_color }}>{numberOf.get(h.id)}</span>
-                        <Icon className="w-4 h-4 text-white/80" />
-                        {hasTeam && <span className="ml-auto text-[9px] font-black uppercase tracking-wide bg-amber-400 text-amber-950 px-1.5 py-0.5 rounded">Team</span>}
-                      </div>
-                      <p className="text-white font-bold text-sm leading-snug line-clamp-2">{h.label}</p>
-                    </div>
-                  </button>
-                );
-              };
-              const filtered = here.length > 0;
-              const shown = filtered ? here : bundle.hotspots;
-              return (
-                <>
-                  {filtered && <p className="text-white/70 text-[11px] font-black uppercase tracking-wide mb-2 mt-1">{viewLabel(view)} · {here.length} feature{here.length > 1 ? 's' : ''}</p>}
-                  {!filtered && view !== 'any' && (
-                    <p className="text-white/50 text-[11px] mb-2 mt-1">No feature is tagged for the {viewLabel(view).toLowerCase()} yet. All features:</p>
-                  )}
-                  <div className="grid grid-cols-2 landscape:grid-cols-4 gap-2.5">{shown.map(tile)}</div>
-                  {filtered && rest.length > 0 && (
-                    <button onClick={() => setDrawerOpen(true)}
-                      className="mt-4 w-full flex items-center justify-center gap-2 text-white/80 text-xs font-bold py-3 rounded-2xl bg-white/5 border border-white/10 active:scale-[0.99]">
-                      <LayoutGrid className="w-4 h-4" /> All features ({bundle.hotspots.length})
-                    </button>
-                  )}
-                  {drawerOpen && (
-                    <div className="absolute inset-0 z-20 bg-black/50 flex items-end landscape:items-stretch landscape:justify-end" onClick={() => setDrawerOpen(false)}>
-                      <div className="bg-slate-950 w-full max-h-[80vh] rounded-t-3xl landscape:max-h-none landscape:w-[52vw] landscape:rounded-none landscape:rounded-l-3xl flex flex-col animate-card-in" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-4 pt-3 pb-2 flex-shrink-0">
-                          <div className="w-10 h-1 rounded-full bg-white/20 absolute left-1/2 -translate-x-1/2 top-2 landscape:hidden" />
-                          <p className="text-white font-black text-sm mt-2 landscape:mt-0">All features</p>
-                          <button onClick={() => setDrawerOpen(false)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white"><X className="w-4 h-4" /></button>
-                        </div>
-                        <div className="overflow-y-auto px-3 pb-6 overscroll-contain">
-                          <div className="grid grid-cols-2 landscape:grid-cols-3 gap-2.5">
-                            {bundle.hotspots.map(h => {
-                              const t = tile(h);
-                              return <div key={h.id} onClick={() => setDrawerOpen(false)}>{t}</div>;
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-
-          {askEnabled && !overlayOpen && (
-            <div className="absolute bottom-6 left-0 right-0 flex justify-center landscape:justify-end landscape:right-5 pointer-events-none">
-              <button onClick={() => setAsking(true)}
-                className="pointer-events-auto inline-flex items-center gap-2 pl-4 pr-5 py-3 rounded-full text-white text-sm font-bold shadow-2xl border border-white/20 active:scale-95 transition"
-                style={{ backgroundColor: brandColor }}>
-                <Mic className="w-5 h-5" /> Ask
+      {product && (() => {
+        const hotspots = bundle?.hotspots ?? [];
+        const numberOf = new Map(hotspots.map((h, i) => [h.id, i + 1]));
+        const here = view === 'any' ? [] : hotspots.filter(h => h.view === view);
+        const filtered = here.length > 0;
+        const shown = filtered ? here : hotspots;
+        // The same numbered dot as on the brochure page, with a short label.
+        const dot = (h: Hotspot, size: 'strip' | 'list') => (
+          <button key={h.id} onClick={() => { setDrawerOpen(false); tapHotspot(h); }}
+            className={size === 'strip'
+              ? 'flex flex-col items-center gap-1.5 w-[4.6rem] flex-shrink-0 active:scale-95 transition'
+              : 'flex items-center gap-3 w-full text-left py-2 active:scale-[0.99] transition'}>
+            <span className="relative w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-black shadow-lg flex-shrink-0"
+              style={{ backgroundColor: h.dot_color, boxShadow: `0 0 0 4px ${h.dot_color}55` }}>
+              {numberOf.get(h.id)}
+            </span>
+            <span className={size === 'strip' ? 'text-white text-[10px] font-semibold leading-tight text-center line-clamp-2 drop-shadow' : 'text-white text-sm font-semibold leading-snug'}>{h.label}</span>
+          </button>
+        );
+        return (
+          <div className="absolute inset-0">
+            {/* Header */}
+            <div className="absolute top-0 left-0 right-0 flex items-center gap-2 p-3 pt-4 land:pr-24">
+              <button onClick={closeProduct} aria-label="Change product"
+                className="w-11 h-11 rounded-full bg-black/40 backdrop-blur border border-white/20 flex items-center justify-center text-white active:scale-95">
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <div className="flex-1 min-w-0">
+                <p className="text-white font-black text-base leading-tight truncate drop-shadow">{product.name}</p>
+                <p className="text-white/70 text-[11px] truncate drop-shadow">{relooking ? 'Looking…' : view !== 'any' ? `Looking at: ${viewLabel(view)}` : 'Tap a number to show the feature'}</p>
+              </div>
+              <button onClick={relook} disabled={relooking} aria-label="Look again"
+                className="w-11 h-11 rounded-full bg-black/40 backdrop-blur border border-white/20 flex items-center justify-center text-white active:scale-95 disabled:opacity-50">
+                {relooking ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <ScanSearch className="w-5 h-5" />}
+              </button>
+              <button onClick={() => setShareOpen(true)} aria-label="Send to customer"
+                className="w-11 h-11 rounded-full bg-black/40 backdrop-blur border border-white/20 flex items-center justify-center text-white active:scale-95">
+                <Share2 className="w-5 h-5" />
               </button>
             </div>
-          )}
-        </div>
-      )}
+
+            {/* Status in the middle of the canvas, only while nothing can be shown */}
+            {!bundle && !bundleError && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" /></div>
+            )}
+            {bundleError && <p className="absolute inset-x-8 top-1/2 -translate-y-1/2 text-white/80 text-sm text-center drop-shadow">{bundleError}</p>}
+            {bundle && hotspots.length === 0 && <p className="absolute inset-x-8 top-1/2 -translate-y-1/2 text-white/80 text-sm text-center drop-shadow">No features added yet.</p>}
+
+            {/* Dots: a strip along the bottom in portrait, down the right side in landscape */}
+            {bundle && hotspots.length > 0 && (
+              <div className="absolute left-0 right-0 bottom-[5.25rem] land:top-20 land:bottom-4 land:left-auto land:right-2 land:w-24 pointer-events-none">
+                <div className="flex gap-1 overflow-x-auto px-3 pb-1 pointer-events-auto land:flex-col land:items-center land:overflow-x-hidden land:overflow-y-auto land:h-full land:px-0 land:gap-3 scrollbar-none">
+                  {shown.map(h => dot(h, 'strip'))}
+                </div>
+              </div>
+            )}
+
+            {/* All features: a small corner control, off the canvas */}
+            {bundle && filtered && hotspots.length > here.length && (
+              <button onClick={() => setDrawerOpen(true)} aria-label="All features"
+                className="absolute bottom-6 right-4 land:bottom-4 land:right-28 w-11 h-11 rounded-full bg-black/40 backdrop-blur border border-white/20 flex items-center justify-center text-white active:scale-95">
+                <LayoutGrid className="w-5 h-5" />
+                <span className="absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-white text-slate-900 text-[10px] font-black flex items-center justify-center">{hotspots.length}</span>
+              </button>
+            )}
+
+            {askEnabled && !overlayOpen && (
+              <div className="absolute bottom-6 left-0 right-0 flex justify-center land:justify-start land:left-5 pointer-events-none">
+                <button onClick={() => setAsking(true)}
+                  className="pointer-events-auto inline-flex items-center gap-2 pl-4 pr-5 py-3 rounded-full text-white text-sm font-bold shadow-2xl border border-white/20 active:scale-95 transition"
+                  style={{ backgroundColor: brandColor }}>
+                  <Mic className="w-5 h-5" /> Ask
+                </button>
+              </div>
+            )}
+
+            {drawerOpen && bundle && (
+              <div className="absolute inset-0 z-20 bg-black/50 flex items-end land:items-stretch land:justify-end" onClick={() => setDrawerOpen(false)}>
+                <div className="bg-slate-950 w-full max-h-[75vh] rounded-t-3xl land:max-h-none land:w-[46vw] land:max-w-sm land:rounded-none land:rounded-l-3xl flex flex-col animate-card-in" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-4 pt-4 pb-2 flex-shrink-0">
+                    <p className="text-white font-black text-sm">All features · {hotspots.length}</p>
+                    <button onClick={() => setDrawerOpen(false)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white"><X className="w-4 h-4" /></button>
+                  </div>
+                  <div className="overflow-y-auto px-4 pb-6 overscroll-contain divide-y divide-white/10">
+                    {hotspots.map(h => (
+                      <div key={h.id} className="flex items-center">
+                        {dot(h, 'list')}
+                        {h.view !== 'any' && <span className="text-[10px] text-white/40 ml-2 flex-shrink-0">{viewLabel(h.view)}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Product grid */}
       {showGrid && (
@@ -563,7 +563,7 @@ export default function FloorPage() {
           </div>
           <div className="flex-1 overflow-y-auto px-4 pb-8">
             {products.length === 0 && <p className="text-white/60 text-sm text-center pt-10">No products are set up for the floor yet.</p>}
-            <div className="grid grid-cols-2 landscape:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 land:grid-cols-4 gap-3">
               {products.map(p => (
                 <button key={p.id} onClick={() => { setShowGrid(false); setResult(null); setResultError(''); cancelAutoOpen(); openProduct(p); }}
                   className="rounded-2xl overflow-hidden bg-white/5 border border-white/10 text-left active:scale-[0.98] transition">
@@ -578,8 +578,8 @@ export default function FloorPage() {
 
       {/* Share sheet */}
       {shareOpen && product && (
-        <div className="absolute inset-0 z-30 bg-black/60 flex items-end landscape:items-center landscape:justify-center p-3" onClick={() => setShareOpen(false)}>
-          <div className="bg-white rounded-3xl w-full landscape:max-w-md p-5 animate-card-in" onClick={e => e.stopPropagation()}>
+        <div className="absolute inset-0 z-30 bg-black/60 flex items-end land:items-center land:justify-center p-3" onClick={() => setShareOpen(false)}>
+          <div className="bg-white rounded-3xl w-full land:max-w-md p-5 animate-card-in" onClick={e => e.stopPropagation()}>
             <p className="font-bold text-slate-900 mb-1">Send to customer</p>
             <p className="text-xs text-slate-500 mb-4">Opens WhatsApp with the {product.name} brochure link. Pick the customer's chat there.</p>
             <button onClick={shareToCustomer} className="w-full inline-flex items-center justify-center gap-2 text-white font-bold py-3 rounded-xl" style={{ backgroundColor: '#25D366' }}>
