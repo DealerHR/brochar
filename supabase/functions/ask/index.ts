@@ -184,7 +184,7 @@ ${contextText || '(no sources available)'}`;
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 400, temperature: 0.2, system,
+        model: MODEL, max_tokens: 400, system,
         messages: [{ role: 'user', content: question }],
       }),
     });
