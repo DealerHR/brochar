@@ -1,23 +1,35 @@
 import { useState } from 'react';
 import {
   HotspotBlock, BlockKind, BlockData, emptyBlockData,
+  TextData, ImageData, AudioData, VideoData,
   LinkData, GalleryData, SpecTableData, PdfData, ActionData, QuizData, PitchData,
 } from '../lib/supabase';
 import { uploadFile, fileExtension } from '../lib/storage';
-import { fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from '../lib/validation';
+import { fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES, MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, youtubeId } from '../lib/validation';
 import {
   Link2, Images, Table2, FileText, MessageCircle, HelpCircle, Lightbulb,
   ChevronUp, ChevronDown, Trash2, Plus, X, Upload, GraduationCap,
+  AlignLeft, ImageIcon, Volume2, Video,
 } from 'lucide-react';
 
-const KINDS: { kind: BlockKind; label: string; icon: typeof Link2; help: string; learnOnly?: boolean }[] = [
-  { kind: 'link', label: 'Web link', icon: Link2, help: 'Opens a web page inside the card, or in the browser.' },
-  { kind: 'gallery', label: 'Image gallery', icon: Images, help: 'Several photos the customer can swipe through.' },
-  { kind: 'spec_table', label: 'Spec table', icon: Table2, help: 'Rows of label and value, for specs or comparisons.' },
-  { kind: 'pdf', label: 'PDF document', icon: FileText, help: 'A spec sheet or price list.' },
-  { kind: 'action', label: 'Contact button', icon: MessageCircle, help: 'Call, WhatsApp or an enquiry form.' },
-  { kind: 'quiz', label: 'Quiz question', icon: HelpCircle, help: 'One multiple-choice question. Learn mode only.', learnOnly: true },
-  { kind: 'pitch', label: 'Sales pitch', icon: Lightbulb, help: 'Pitch line, likely objection and how to answer it. Learn mode only.', learnOnly: true },
+const KINDS: { kind: BlockKind; label: string; icon: typeof Link2; help: string; group: 'basic' | 'more' | 'learn'; learnOnly?: boolean }[] = [
+  { kind: 'text', label: 'Text', icon: AlignLeft, help: 'A short description the customer reads.', group: 'basic' },
+  { kind: 'image', label: 'Image', icon: ImageIcon, help: 'One picture with an optional caption.', group: 'basic' },
+  { kind: 'audio', label: 'Audio', icon: Volume2, help: 'Read aloud by the phone, or an uploaded recording. Plays when the card opens.', group: 'basic' },
+  { kind: 'video', label: 'Video', icon: Video, help: 'YouTube link or an uploaded file.', group: 'basic' },
+  { kind: 'link', label: 'Web link', icon: Link2, help: 'Opens a web page inside the card, or in the browser.', group: 'more' },
+  { kind: 'gallery', label: 'Image gallery', icon: Images, help: 'Several photos the customer can swipe through.', group: 'more' },
+  { kind: 'spec_table', label: 'Spec table', icon: Table2, help: 'Rows of label and value, for specs or comparisons.', group: 'more' },
+  { kind: 'pdf', label: 'PDF document', icon: FileText, help: 'A spec sheet or price list.', group: 'more' },
+  { kind: 'action', label: 'Contact button', icon: MessageCircle, help: 'Call, WhatsApp or an enquiry form.', group: 'more' },
+  { kind: 'pitch', label: 'Sales pitch', icon: Lightbulb, help: 'Pitch line, likely objection and how to answer it.', group: 'learn', learnOnly: true },
+  { kind: 'quiz', label: 'Quiz question', icon: HelpCircle, help: 'One multiple-choice question with instant feedback.', group: 'learn', learnOnly: true },
+];
+
+const GROUPS: { id: 'basic' | 'more' | 'learn'; title: string }[] = [
+  { id: 'basic', title: 'Content' },
+  { id: 'more', title: 'More' },
+  { id: 'learn', title: 'Learn mode only — never shown to customers' },
 ];
 
 function newId(): string {
@@ -57,8 +69,8 @@ export default function BlockEditor({ hotspotId, blocks, onChange, storageBase, 
 
   return (
     <div>
-      <label className="block text-xs font-bold text-brand-navy mb-1.5">Content blocks</label>
-      <p className="text-xs text-slate-400 mb-2">Shown on the card below the description, in this order.</p>
+      <label className="block text-xs font-bold text-brand-navy mb-1.5">Content</label>
+      <p className="text-xs text-slate-400 mb-2">Shown on the card in this order. Audio and video marked "play on open" start as soon as the card opens.</p>
 
       <div className="space-y-2">
         {blocks.map((b, i) => {
@@ -85,18 +97,22 @@ export default function BlockEditor({ hotspotId, blocks, onChange, storageBase, 
       </div>
 
       {picking ? (
-        <div className="mt-2 border-2 border-dashed border-slate-200 rounded-xl p-2 grid grid-cols-1 gap-1">
-          {KINDS.map(k => (
-            <button key={k.kind} onClick={() => add(k.kind)}
-              className="flex items-start gap-2 text-left px-2 py-1.5 rounded-lg hover:bg-brand-cream/40 transition">
-              <k.icon className="w-4 h-4 text-brand-navy mt-0.5 flex-shrink-0" />
-              <span>
-                <span className="text-xs font-bold text-brand-navy block">{k.label}</span>
-                <span className="text-[11px] text-slate-400 block leading-snug">{k.help}</span>
-              </span>
-            </button>
+        <div className="mt-2 border-2 border-dashed border-slate-200 rounded-xl p-2 space-y-2">
+          {GROUPS.map(g => (
+            <div key={g.id}>
+              <p className={`text-[10px] font-black uppercase tracking-wide px-2 pt-1 pb-0.5 ${g.id === 'learn' ? 'text-amber-700' : 'text-slate-400'}`}>{g.title}</p>
+              <div className="grid grid-cols-2 gap-1">
+                {KINDS.filter(k => k.group === g.id).map(k => (
+                  <button key={k.kind} onClick={() => add(k.kind)} title={k.help}
+                    className={`flex items-center gap-2 text-left px-2 py-2 rounded-lg transition ${g.id === 'learn' ? 'hover:bg-amber-50' : 'hover:bg-brand-cream/40'}`}>
+                    <k.icon className={`w-4 h-4 flex-shrink-0 ${g.id === 'learn' ? 'text-amber-700' : 'text-brand-navy'}`} />
+                    <span className="text-xs font-bold text-brand-navy">{k.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
-          <button onClick={() => setPicking(false)} className="text-xs text-slate-400 hover:text-slate-600 py-1">Cancel</button>
+          <button onClick={() => setPicking(false)} className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1">Cancel</button>
         </div>
       ) : (
         <button onClick={() => setPicking(true)}
@@ -115,6 +131,104 @@ function BlockForm({ block, onChange, storageBase, onError }: {
   block: HotspotBlock; onChange: (d: BlockData) => void; storageBase: string; onError: (m: string) => void;
 }) {
   switch (block.kind) {
+    case 'text': {
+      const d = block.data as TextData;
+      return <textarea value={d.text} onChange={e => onChange({ text: e.target.value })} rows={3} placeholder="What the customer should know about this feature" className={`${inp} resize-none`} />;
+    }
+    case 'image': {
+      const d = block.data as ImageData;
+      return (
+        <div className="space-y-2">
+          {d.url && <img src={d.url} alt="" className="w-full h-28 object-cover rounded-lg border border-slate-200" />}
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-cerise cursor-pointer">
+              <Upload className="w-3.5 h-3.5" /> {d.url ? 'Replace image' : 'Upload image'}
+              <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                const f = e.target.files?.[0]; if (!f) return;
+                const problem = fileTooLarge(f, MAX_IMAGE_BYTES); if (problem) { onError(problem); return; }
+                try { onChange({ ...d, url: await uploadFile(`${storageBase}/hotspot-images/${block.id}.${fileExtension(f, 'jpg')}`, f) }); }
+                catch (err) { onError(err instanceof Error ? err.message : 'Upload failed.'); }
+              }} />
+            </label>
+            {d.url && <button onClick={() => onChange({ ...d, url: '' })} className="text-xs text-slate-400 hover:text-brand-cerise">Remove</button>}
+          </div>
+          <input value={d.caption} onChange={e => onChange({ ...d, caption: e.target.value })} placeholder="Caption (optional)" className={inp} />
+        </div>
+      );
+    }
+    case 'audio': {
+      const d = block.data as AudioData;
+      return (
+        <div className="space-y-2">
+          <div className="flex gap-3 text-xs">
+            {(['tts', 'upload'] as const).map(m => (
+              <label key={m} className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" checked={d.mode === m} onChange={() => onChange({ ...d, mode: m })} className="accent-brand-cerise" />
+                <span className="font-semibold text-slate-700">{m === 'tts' ? 'Read aloud by the phone' : 'Uploaded recording'}</span>
+              </label>
+            ))}
+          </div>
+          {d.mode === 'tts' ? (
+            <textarea value={d.text} onChange={e => onChange({ ...d, text: e.target.value })} rows={3} placeholder="Text to read aloud. Leave blank to read the hotspot's text block." className={`${inp} resize-none`} />
+          ) : (
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-cerise cursor-pointer">
+                <Upload className="w-3.5 h-3.5" /> {d.url ? 'Replace audio' : 'Upload MP3'}
+                <input type="file" accept="audio/*" className="hidden" onChange={async e => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  const problem = fileTooLarge(f, MAX_AUDIO_BYTES); if (problem) { onError(problem); return; }
+                  try { onChange({ ...d, url: await uploadFile(`${storageBase}/audio/${block.id}.${fileExtension(f, 'mp3')}`, f) }); }
+                  catch (err) { onError(err instanceof Error ? err.message : 'Upload failed.'); }
+                }} />
+              </label>
+              {d.url && <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-slate-400 hover:underline">Current file</a>}
+            </div>
+          )}
+          <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="checkbox" checked={d.autoplay} onChange={e => onChange({ ...d, autoplay: e.target.checked })} className="accent-brand-cerise" />
+            <span className="font-semibold text-slate-700">Play when the card opens</span>
+          </label>
+        </div>
+      );
+    }
+    case 'video': {
+      const d = block.data as VideoData;
+      return (
+        <div className="space-y-2">
+          <div className="flex gap-3 text-xs">
+            {(['youtube', 'upload'] as const).map(m => (
+              <label key={m} className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" checked={d.mode === m} onChange={() => onChange({ ...d, mode: m, ref: '' })} className="accent-brand-cerise" />
+                <span className="font-semibold text-slate-700">{m === 'youtube' ? 'YouTube' : 'Uploaded file'}</span>
+              </label>
+            ))}
+          </div>
+          {d.mode === 'youtube' ? (
+            <div>
+              <input value={d.ref} onChange={e => onChange({ ...d, ref: e.target.value })} placeholder="https://youtube.com/watch?v=..." className={inp} />
+              {d.ref && !youtubeId(d.ref) && <p className="text-[11px] text-brand-cerise mt-1">That does not look like a YouTube link.</p>}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-cerise cursor-pointer">
+                <Upload className="w-3.5 h-3.5" /> {d.ref ? 'Replace video' : 'Upload MP4'}
+                <input type="file" accept="video/*" className="hidden" onChange={async e => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  const problem = fileTooLarge(f, MAX_VIDEO_BYTES); if (problem) { onError(problem); return; }
+                  try { onChange({ ...d, ref: await uploadFile(`${storageBase}/video/${block.id}.${fileExtension(f, 'mp4')}`, f) }); }
+                  catch (err) { onError(err instanceof Error ? err.message : 'Upload failed.'); }
+                }} />
+              </label>
+              {d.ref && <a href={d.ref} target="_blank" rel="noopener noreferrer" className="text-[11px] text-slate-400 hover:underline">Current file</a>}
+            </div>
+          )}
+          <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="checkbox" checked={d.autoplay} onChange={e => onChange({ ...d, autoplay: e.target.checked })} className="accent-brand-cerise" />
+            <span className="font-semibold text-slate-700">Play when the card opens</span>
+          </label>
+        </div>
+      );
+    }
     case 'link': {
       const d = block.data as LinkData;
       return (

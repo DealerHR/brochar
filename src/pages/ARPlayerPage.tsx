@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from '../lib/router';
-import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant } from '../lib/supabase';
-import BlockView from '../components/BlockView';
+import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, LEARN_ONLY_KINDS, LinkData, PdfData, ActionData } from '../lib/supabase';
+import HotspotCard from '../components/HotspotCard';
 import LinkOverlay from '../components/LinkOverlay';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR, MindARThree } from '../lib/mindar';
 import { ArSession } from '../lib/analytics';
-import { youtubeId, isHttpUrl } from '../lib/validation';
-import { Volume2, Play, X, AlertCircle, ChevronLeft, GraduationCap } from 'lucide-react';
+import { isHttpUrl } from '../lib/validation';
+import { AlertCircle, ChevronLeft, GraduationCap, Eye } from 'lucide-react';
 
 // Cross-browser fullscreen helpers
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,14 +47,7 @@ function readIsLandscape(): boolean {
   return window.innerWidth > window.innerHeight;
 }
 
-type PopupState = { hotspot: Hotspot; showVideo: boolean } | null;
-
-// Only render video controls when the stored reference is something we can safely embed.
-function hasVideo(h: Hotspot): boolean {
-  if (h.video_type === 'youtube') return !!youtubeId(h.video_ref ?? '');
-  if (h.video_type === 'upload') return isHttpUrl(h.video_ref);
-  return false;
-}
+type PopupState = { hotspot: Hotspot } | null;
 
 export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolean }) {
   const { tenantSlug, productSlug } = useParams();
@@ -72,6 +65,7 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
   const [pages, setPages] = useState<BrochurePage[]>([]);
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
   const [blocks, setBlocks] = useState<Record<string, HotspotBlock[]>>({});
+  const [isPreview, setIsPreview] = useState(false);
   const [linkOverlay, setLinkOverlay] = useState<{ url: string; label: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMsg, setLoadingMsg] = useState('Loading experience...');
@@ -158,9 +152,13 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
     if (!p) { setError('Experience not found.'); return; }
     setProduct(p);
 
-    const { data: br } = await supabase.from('brochures').select('*').eq('product_id', p.id).eq('status', 'active').maybeSingle();
-    if (!br?.mind_file_url) { setError('AR experience is not yet available for this product.'); return; }
+    // Anonymous visitors only ever receive active brochures (row security). A signed-in
+    // editor also receives drafts, which lets them preview before going live.
+    const { data: br } = await supabase.from('brochures').select('*').eq('product_id', p.id).maybeSingle();
+    if (!br) { setError('This brochure is not live yet. If you are the editor, sign in to preview it.'); return; }
+    if (!br.mind_file_url) { setError('The brochure pages have not been compiled yet. Open the builder and press Compile Targets.'); return; }
     setBrochure(br);
+    setIsPreview(br.status !== 'active');
 
     const { data: pg } = await supabase.from('brochure_pages').select('*').eq('brochure_id', br.id).order('page_index');
     const pageIds = (pg ?? []).map(x => x.id);
@@ -173,7 +171,11 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
     if (hotspotIds.length) {
       const { data: bl } = await supabase.from('hotspot_blocks').select('*').in('hotspot_id', hotspotIds).order('position');
       const map: Record<string, HotspotBlock[]> = {};
-      for (const b of (bl ?? []) as HotspotBlock[]) (map[b.hotspot_id] ??= []).push(b);
+      for (const b of (bl ?? []) as HotspotBlock[]) {
+        // Learn-only blocks never reach the customer card.
+        if (!learnMode && LEARN_ONLY_KINDS.includes(b.kind)) continue;
+        (map[b.hotspot_id] ??= []).push(b);
+      }
       setBlocks(map);
     }
 
@@ -404,19 +406,22 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
         if (dotsRef.current.length === 0) return;
         const cvs2 = renderer.domElement;
         const rect = cvs2.getBoundingClientRect();
-        const THRESHOLD = 120;
-
+        // Pick the NEAREST dot within reach, not the first one in the list, so
+        // dots placed close together each respond to their own tap.
+        const THRESHOLD = 70;
+        let best: { hotspot: Hotspot; dist: number } | null = null;
         for (const { dot, hotspot } of dotsRef.current) {
           const pos = new THREE.Vector3();
           dot.getWorldPosition(pos);
           pos.project(camera);
+          // Dots on pages that are not currently tracked project to nonsense; skip them.
+          if (pos.z > 1 || (dot.parent && !dot.parent.visible)) continue;
           const sx = (pos.x + 1) / 2 * rect.width + rect.left;
           const sy = (-pos.y + 1) / 2 * rect.height + rect.top;
-          if (Math.hypot(clientX - sx, clientY - sy) < THRESHOLD) {
-            handleHotspotTap(hotspot);
-            return;
-          }
+          const dist = Math.hypot(clientX - sx, clientY - sy);
+          if (dist < THRESHOLD && (!best || dist < best.dist)) best = { hotspot, dist };
         }
+        if (best) handleHotspotTap(best.hotspot);
       }
 
       // Track touchstart so we can ignore touchend if the finger dragged (scroll gesture).
@@ -457,27 +462,47 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
   function handleHotspotTap(hotspot: Hotspot) {
     lastPopupOpenRef.current = Date.now();
     stopAudio();
-    setPopup({ hotspot, showVideo: false });
     sessionRef.current?.hotspotTapped(hotspot.id, hotspot.page_id);
-  }
 
-  function playHotspotAudio(hotspot: Hotspot) {
-    stopAudio();
-    if (hotspot.audio_type === 'upload' && isHttpUrl(hotspot.audio_url)) {
-      const a = new Audio(hotspot.audio_url);
-      audioRef.current = a;
-      a.play().catch(() => { /* autoplay blocked or bad file */ });
-    } else if ('speechSynthesis' in window) {
-      const utter = new SpeechSynthesisUtterance(`${hotspot.label}. ${hotspot.description ?? ''}`);
-      utter.lang = 'en-IN';
-      window.speechSynthesis.speak(utter);
+    // "Launch" hotspots skip the card and open their first launchable block.
+    if (hotspot.tap_action === 'launch') {
+      const first = (blocks[hotspot.id] ?? []).find(b => ['link', 'pdf', 'video', 'action'].includes(b.kind));
+      if (first && launchBlock(hotspot, first)) return;
     }
-    sessionRef.current?.mediaPlayed(hotspot.id, hotspot.page_id);
+    setPopup({ hotspot });
   }
 
-  function showVideo() {
-    setPopup(p => p ? { ...p, showVideo: true } : p);
-    if (popup) sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id);
+  /** Opens a block directly. Returns false if it could not be launched (then the card opens). */
+  function launchBlock(hotspot: Hotspot, b: HotspotBlock): boolean {
+    const media = () => sessionRef.current?.mediaPlayed(hotspot.id, hotspot.page_id);
+    if (b.kind === 'link') {
+      const d = b.data as LinkData;
+      if (!isHttpUrl(d.url)) return false;
+      media();
+      if (d.open_mode === 'newtab') window.open(d.url, '_blank', 'noopener');
+      else setLinkOverlay({ url: d.url, label: d.label || hotspot.label });
+      return true;
+    }
+    if (b.kind === 'pdf') {
+      const d = b.data as PdfData;
+      if (!isHttpUrl(d.url)) return false;
+      media();
+      window.open(d.url, '_blank', 'noopener');
+      return true;
+    }
+    if (b.kind === 'action') {
+      const d = b.data as ActionData;
+      const number = (d.phone || (d.type === 'whatsapp' ? tenant?.whatsapp_number : tenant?.phone_number) || '').replace(/[^0-9+]/g, '');
+      if (d.type === 'call' && number) { media(); window.location.href = `tel:${number}`; return true; }
+      if (d.type === 'whatsapp' && number) {
+        media();
+        window.open(`https://wa.me/${number.replace('+', '')}${d.message ? `?text=${encodeURIComponent(d.message)}` : ''}`, '_blank', 'noopener');
+        return true;
+      }
+      return false; // enquiry form needs the card
+    }
+    // Video plays inside the card with autoplay, so the card itself is the launch.
+    return false;
   }
 
   async function submitLead(lead: { name: string; phone: string; message: string; hotspotId: string }) {
@@ -508,7 +533,7 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
   }
 
   if (error) return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
+    <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} className="bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
       <AlertCircle className="w-12 h-12 text-slate-600 mb-4" />
       <h2 className="text-lg font-bold text-white mb-2">Experience Unavailable</h2>
       <p className="text-slate-400 text-sm max-w-xs">{error}</p>
@@ -523,6 +548,13 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
     <>
       {/* Back / close button — always visible while AR is running */}
       {linkOverlay && <LinkOverlay url={linkOverlay.url} label={linkOverlay.label} brandColor={brandColor} onClose={() => setLinkOverlay(null)} />}
+
+      {started && isPreview && !popup && (
+        <div style={{ position: 'fixed', top: learnMode ? '3.5rem' : '1rem', right: '1rem', zIndex: 50 }}
+          className="inline-flex items-center gap-1.5 bg-white/90 text-slate-800 text-xs font-black px-3 py-1.5 rounded-full shadow-lg select-none">
+          <Eye className="w-3.5 h-3.5" /> Draft preview
+        </div>
+      )}
 
       {started && learnMode && !popup && (
         <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 50 }}
@@ -590,102 +622,21 @@ export default function ARPlayerPage({ learnMode = false }: { learnMode?: boolea
         </div>
       )}
 
-      {/* Hotspot popup
-          Portrait: slides up as a bottom sheet (max 70 vh)
-          Landscape: slides in from the right as a side drawer (full height, fixed width) */}
-      {popup && (
-        <div
-          style={{ position: 'fixed', inset: 0, zIndex: 30 }}
-          className={`flex ${isLandscape ? 'flex-row items-stretch justify-end' : 'flex-col justify-end'}`}
-        >
-          <div className="bg-black/40 absolute inset-0" onClick={closePopup} />
-          <div className={`relative bg-white shadow-2xl overflow-y-auto ${
-            isLandscape
-              ? 'rounded-l-2xl h-full w-80 max-w-[70vw]'
-              : 'rounded-t-2xl w-full max-h-[70vh]'
-          }`}>
-            {/* Colour stripe: top in portrait, left edge in landscape */}
-            {isLandscape ? (
-              <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl" style={{ backgroundColor: brandColor }} />
-            ) : (
-              <div className="h-1 rounded-t-2xl" style={{ backgroundColor: brandColor }} />
-            )}
-            <div className={`p-5 ${isLandscape ? 'pl-6' : ''}`}>
-              <div className="flex items-start justify-between mb-3">
-                <h2 className="text-lg font-bold text-slate-900 pr-6">{popup.hotspot.label}</h2>
-                <button onClick={closePopup}
-                  className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200 transition">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {popup.hotspot.description && (
-                <p className="text-slate-600 text-sm leading-relaxed mb-4">{popup.hotspot.description}</p>
-              )}
-
-              {isHttpUrl(popup.hotspot.image_url) && (
-                <div className="mb-4 rounded-xl overflow-hidden border border-slate-100">
-                  <img src={popup.hotspot.image_url} alt={popup.hotspot.label}
-                    className="w-full object-contain max-h-48" />
-                </div>
-              )}
-
-              <div className="flex gap-2 flex-wrap">
-                {popup.hotspot.audio_type !== 'none' && (
-                  <button
-                    onClick={() => playHotspotAudio(popup.hotspot)}
-                    className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-full text-white transition active:scale-95"
-                    style={{ backgroundColor: brandColor }}>
-                    <Volume2 className="w-4 h-4" /> Listen
-                  </button>
-                )}
-                {hasVideo(popup.hotspot) && !popup.showVideo && (
-                  <button
-                    onClick={showVideo}
-                    className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-full bg-slate-900 text-white transition active:scale-95">
-                    <Play className="w-4 h-4" /> Watch
-                  </button>
-                )}
-              </div>
-
-              {popup.showVideo && hasVideo(popup.hotspot) && (
-                <div className="mt-4 rounded-xl overflow-hidden bg-black aspect-video">
-                  {popup.hotspot.video_type === 'youtube' ? (
-                    <iframe
-                      src={`https://www.youtube-nocookie.com/embed/${youtubeId(popup.hotspot.video_ref ?? '')}?autoplay=1&rel=0&playsinline=1`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                      className="w-full h-full border-0"
-                    />
-                  ) : (
-                    <video
-                      src={popup.hotspot.video_ref ?? ''}
-                      controls
-                      autoPlay
-                      playsInline
-                      className="w-full h-full"
-                    />
-                  )}
-                </div>
-              )}
-
-              {(blocks[popup.hotspot.id] ?? []).length > 0 && (
-                <div className="mt-4 space-y-3">
-                  {(blocks[popup.hotspot.id] ?? []).map(b => (
-                    <BlockView key={b.id} block={b} tenant={tenant!} brandColor={brandColor} learnMode={learnMode}
-                      onLinkOpen={(url, label, mode) => {
-                        if (mode === 'newtab') window.open(url, '_blank', 'noopener');
-                        else setLinkOverlay({ url, label });
-                      }}
-                      onLead={submitLead}
-                      onMedia={() => sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {popup && tenant && (
+        <HotspotCard
+          hotspot={popup.hotspot}
+          blocks={blocks[popup.hotspot.id] ?? []}
+          tenant={tenant}
+          brandColor={brandColor}
+          learnMode={learnMode}
+          onClose={closePopup}
+          onLinkOpen={(url, label, mode) => {
+            if (mode === 'newtab') window.open(url, '_blank', 'noopener');
+            else setLinkOverlay({ url, label });
+          }}
+          onLead={submitLead}
+          onMedia={() => sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id)}
+        />
       )}
 
       {/* Hotspot quick-access bar

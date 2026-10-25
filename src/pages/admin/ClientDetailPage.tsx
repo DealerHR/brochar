@@ -183,13 +183,18 @@ export default function ClientDetailPage() {
                 </div>
                 <p className="text-sm text-slate-400 font-mono">/{tenant.slug}</p>
                 {tenant.description && <p className="text-sm text-slate-500 mt-1">{tenant.description}</p>}
-                {(tenant.whatsapp_number || tenant.phone_number) && (
-                  <p className="text-xs text-slate-400 mt-1">
-                    {tenant.whatsapp_number && <>WhatsApp {tenant.whatsapp_number}</>}
-                    {tenant.whatsapp_number && tenant.phone_number && ' · '}
-                    {tenant.phone_number && <>Phone {tenant.phone_number}</>}
-                  </p>
-                )}
+                <p className="text-xs text-slate-400 mt-1.5">
+                  <span className="font-bold text-slate-500">Contact defaults for hotspot buttons: </span>
+                  {tenant.whatsapp_number || tenant.phone_number ? (
+                    <>
+                      {tenant.whatsapp_number && <>WhatsApp {tenant.whatsapp_number}</>}
+                      {tenant.whatsapp_number && tenant.phone_number && ' · '}
+                      {tenant.phone_number && <>Phone {tenant.phone_number}</>}
+                    </>
+                  ) : manageable ? (
+                    <button onClick={() => setEditing(true)} className="text-brand-cerise font-bold hover:underline">not set — add WhatsApp and phone</button>
+                  ) : 'not set'}
+                </p>
                 <div className="flex items-center gap-4 mt-3">
                   {manageable && (
                     <button onClick={() => setEditing(true)}

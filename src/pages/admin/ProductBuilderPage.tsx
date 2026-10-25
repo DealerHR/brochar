@@ -6,22 +6,16 @@ import QrModal from '../../components/QrModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR } from '../../lib/mindar';
 import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../../lib/storage';
-import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
+import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
 import {
-  ArrowLeft, Upload, FileImage, Trash2, Plus, X, Volume2, Video, Save,
-  Zap, CheckCircle2, FilePlus, ExternalLink, ImageIcon, AlertTriangle, Lock, QrCode, GraduationCap
+  ArrowLeft, FileImage, Trash2, Plus, X, Save,
+  Zap, CheckCircle2, FilePlus, AlertTriangle, Lock, QrCode, GraduationCap
 } from 'lucide-react';
 
 type HotspotForm = {
   label: string;
-  description: string;
   dot_color: string;
-  audio_type: 'tts' | 'upload' | 'none';
-  audio_url: string;
-  video_type: 'none' | 'youtube' | 'upload';
-  video_ref: string;
-  image_url: string;
-  display_order: number;
+  tap_action: 'card' | 'launch';
 };
 
 const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
@@ -53,9 +47,6 @@ export default function ProductBuilderPage() {
   const [compiling, setCompiling] = useState(false);
   const [compileProgress, setCompileProgress] = useState(0);
   const [savingHotspot, setSavingHotspot] = useState(false);
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [hotspotImageFile, setHotspotImageFile] = useState<File | null>(null);
   const [notice, setNotice] = useState('');
   const [showQr, setShowQr] = useState(false);
   const imageRef = useRef<HTMLDivElement>(null);
@@ -68,9 +59,6 @@ export default function ProductBuilderPage() {
   useEffect(() => {
     setSelectedHotspot(null);
     setHotspotForm(null);
-    setAudioFile(null);
-    setVideoFile(null);
-    setHotspotImageFile(null);
   }, [selectedPage?.id]);
 
   async function load() {
@@ -213,11 +201,10 @@ export default function ProductBuilderPage() {
     const { data } = await supabase.from('hotspots').insert({
       page_id: selectedPage.id,
       label: 'New Hotspot',
-      description: '',
       pos_x: parseFloat(x.toFixed(2)),
       pos_y: parseFloat(y.toFixed(2)),
       dot_color: '#D8315B',
-      audio_type: 'tts',
+      audio_type: 'none',
       video_type: 'none',
       display_order: (hotspots[selectedPage.id]?.length ?? 0),
     }).select().single();
@@ -231,20 +218,7 @@ export default function ProductBuilderPage() {
   function openHotspot(h: Hotspot) {
     setSelectedHotspot(h);
     setEditBlocks(blocks[h.id] ?? []);
-    setAudioFile(null);
-    setVideoFile(null);
-    setHotspotImageFile(null);
-    setHotspotForm({
-      label: h.label,
-      description: h.description ?? '',
-      dot_color: h.dot_color,
-      audio_type: h.audio_type,
-      audio_url: h.audio_url ?? '',
-      video_type: h.video_type,
-      video_ref: h.video_ref ?? '',
-      image_url: h.image_url ?? '',
-      display_order: h.display_order,
-    });
+    setHotspotForm({ label: h.label, dot_color: h.dot_color, tap_action: h.tap_action ?? 'card' });
   }
 
   // Fix 1: drag handlers for repositioning hotspots
@@ -293,13 +267,16 @@ export default function ProductBuilderPage() {
     if (!label) { setNotice('Give the hotspot a label.'); return; }
     const colorProblem = hexColorError(hotspotForm.dot_color);
     if (colorProblem) { setNotice(colorProblem); return; }
-    if (hotspotForm.video_type === 'youtube' && !youtubeId(hotspotForm.video_ref)) {
-      setNotice('Paste a valid YouTube link or video id.'); return;
-    }
     for (const b of editBlocks) {
       const d = b.data as Record<string, unknown>;
       if (b.kind === 'link' && !/^https?:\/\//.test(String(d.url ?? ''))) { setNotice('Web link blocks need an address starting with http:// or https://'); return; }
       if (b.kind === 'pdf' && !/^https?:\/\//.test(String(d.url ?? ''))) { setNotice('Upload a PDF or paste its web address.'); return; }
+      if (b.kind === 'image' && !String(d.url ?? '')) { setNotice('Image blocks need an uploaded image.'); return; }
+      if (b.kind === 'audio' && d.mode === 'upload' && !String(d.url ?? '')) { setNotice('Upload an audio file, or switch the audio block to "Read aloud".'); return; }
+      if (b.kind === 'video') {
+        if (d.mode === 'youtube' && !youtubeId(String(d.ref ?? ''))) { setNotice('Paste a valid YouTube link.'); return; }
+        if (d.mode === 'upload' && !String(d.ref ?? '')) { setNotice('Upload a video file.'); return; }
+      }
       if (b.kind === 'quiz') {
         const opts = (d.options as string[]).map(o => o.trim());
         if (!String(d.question ?? '').trim() || opts.filter(Boolean).length < 2) { setNotice('Quiz blocks need a question and at least two options.'); return; }
@@ -308,33 +285,8 @@ export default function ProductBuilderPage() {
         setNotice('Contact buttons need a number here, or a default number on the client page.'); return;
       }
     }
-    const sizeProblem =
-      (audioFile && fileTooLarge(audioFile, MAX_AUDIO_BYTES)) ||
-      (videoFile && fileTooLarge(videoFile, MAX_VIDEO_BYTES)) ||
-      (hotspotImageFile && fileTooLarge(hotspotImageFile, MAX_IMAGE_BYTES)) || null;
-    if (sizeProblem) { setNotice(sizeProblem); return; }
 
     setSavingHotspot(true);
-    let audio_url = hotspotForm.audio_type === 'upload' ? hotspotForm.audio_url : '';
-    let video_ref = hotspotForm.video_type === 'none' ? '' : hotspotForm.video_type === 'youtube' ? youtubeId(hotspotForm.video_ref)! : hotspotForm.video_ref;
-    let image_url = hotspotForm.image_url;
-    const base = `${clientId}/${productId}`;
-
-    try {
-      if (audioFile && hotspotForm.audio_type === 'upload') {
-        audio_url = await uploadFile(`${base}/audio/${selectedHotspot.id}.${fileExtension(audioFile, 'mp3')}`, audioFile);
-      }
-      if (videoFile && hotspotForm.video_type === 'upload') {
-        video_ref = await uploadFile(`${base}/video/${selectedHotspot.id}.${fileExtension(videoFile, 'mp4')}`, videoFile);
-      }
-      if (hotspotImageFile) {
-        image_url = await uploadFile(`${base}/hotspot-images/${selectedHotspot.id}.${fileExtension(hotspotImageFile, 'jpg')}`, hotspotImageFile);
-      }
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : 'Upload failed.');
-      setSavingHotspot(false);
-      return;
-    }
 
     // The user may have dragged the dot while the form was open. selectedHotspot is a
     // snapshot from when the form opened, so its pos_x/pos_y may be stale. Read the
@@ -344,11 +296,7 @@ export default function ProductBuilderPage() {
     const pos_x = liveHotspot?.pos_x ?? selectedHotspot.pos_x;
     const pos_y = liveHotspot?.pos_y ?? selectedHotspot.pos_y;
 
-    const payload = {
-      ...hotspotForm, label,
-      description: hotspotForm.description.trim() || null,
-      audio_url: audio_url || null, video_ref: video_ref || null, image_url: image_url || null,
-    };
+    const payload = { label, dot_color: hotspotForm.dot_color, tap_action: hotspotForm.tap_action };
     const { error } = await supabase.from('hotspots').update(payload).eq('id', selectedHotspot.id);
     if (error) { setNotice(error.message); setSavingHotspot(false); return; }
 
@@ -363,12 +311,9 @@ export default function ProductBuilderPage() {
       if (bErr) { setNotice(`Saved hotspot, but blocks failed: ${bErr.message}`); setSavingHotspot(false); return; }
     }
     setBlocks(prev => ({ ...prev, [selectedHotspot.id]: editBlocks.map((b, i) => ({ ...b, position: i })) }));
-    // Remove files the user cleared from the form.
-    await removeFiles([
-      selectedHotspot.audio_url && !payload.audio_url ? pathFromPublicUrl(selectedHotspot.audio_url) : null,
-      selectedHotspot.video_type === 'upload' && selectedHotspot.video_ref && (!payload.video_ref || hotspotForm.video_type !== 'upload') ? pathFromPublicUrl(selectedHotspot.video_ref) : null,
-      selectedHotspot.image_url && !payload.image_url ? pathFromPublicUrl(selectedHotspot.image_url) : null,
-    ]);
+    // Remove uploaded files that belonged to blocks the user deleted.
+    const keptFiles = new Set(editBlocks.flatMap(blockFilePaths));
+    await removeFiles(before.flatMap(blockFilePaths).filter(p => p && !keptFiles.has(p)));
     const updated: Hotspot = { ...selectedHotspot, ...payload, pos_x, pos_y };
     setHotspots(h => ({
       ...h,
@@ -377,22 +322,28 @@ export default function ProductBuilderPage() {
     setSavingHotspot(false);
     setSelectedHotspot(null);
     setHotspotForm(null);
-    setAudioFile(null);
-    setVideoFile(null);
-    setHotspotImageFile(null);
+  }
+
+  /** Storage paths referenced by one block (only our own bucket's files). */
+  function blockFilePaths(b: HotspotBlock): (string | null)[] {
+    const d = b.data as Record<string, unknown>;
+    switch (b.kind) {
+      case 'image': return [pathFromPublicUrl(String(d.url ?? ''))];
+      case 'audio': return d.mode === 'upload' ? [pathFromPublicUrl(String(d.url ?? ''))] : [];
+      case 'video': return d.mode === 'upload' ? [pathFromPublicUrl(String(d.ref ?? ''))] : [];
+      case 'gallery': return ((d.images as string[]) ?? []).map(pathFromPublicUrl);
+      case 'pdf': return [pathFromPublicUrl(String(d.url ?? ''))];
+      default: return [];
+    }
   }
 
   function hotspotFilePaths(h: Hotspot) {
-    const blockFiles = (blocks[h.id] ?? []).flatMap(b => {
-      if (b.kind === 'gallery') return (b.data as { images: string[] }).images.map(pathFromPublicUrl);
-      if (b.kind === 'pdf') return [pathFromPublicUrl((b.data as { url: string }).url)];
-      return [];
-    });
     return [
+      // legacy columns from before content blocks existed
       h.audio_type === 'upload' ? pathFromPublicUrl(h.audio_url) : null,
       h.video_type === 'upload' ? pathFromPublicUrl(h.video_ref) : null,
       pathFromPublicUrl(h.image_url),
-      ...blockFiles,
+      ...(blocks[h.id] ?? []).flatMap(blockFilePaths),
     ];
   }
 
@@ -695,12 +646,6 @@ export default function ProductBuilderPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-brand-navy mb-1.5">Description</label>
-                <textarea value={hotspotForm.description} onChange={e => setHotspotForm(f => f ? { ...f, description: e.target.value } : f)}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-navy transition resize-none" rows={3} />
-              </div>
-
-              <div>
                 <label className="block text-xs font-bold text-brand-navy mb-1.5">Dot Color</label>
                 <div className="flex items-center gap-2">
                   <input type="color" value={hotspotForm.dot_color} onChange={e => setHotspotForm(f => f ? { ...f, dot_color: e.target.value } : f)}
@@ -710,130 +655,13 @@ export default function ProductBuilderPage() {
                 </div>
               </div>
 
-              {/* Audio section */}
               <div>
-                <label className="block text-xs font-bold text-brand-navy mb-1.5">
-                  <Volume2 className="w-3.5 h-3.5 inline mr-1" />Audio
-                </label>
-                <div className="space-y-1.5">
-                  {(['tts', 'upload', 'none'] as const).map(t => (
-                    <label key={t} className="flex items-center gap-2 cursor-pointer">
-                      <input type="radio" checked={hotspotForm.audio_type === t} onChange={() => setHotspotForm(f => f ? { ...f, audio_type: t } : f)} className="accent-brand-cerise" />
-                      <span className="text-sm text-slate-700 font-medium">{t === 'tts' ? 'Text to Speech' : t === 'upload' ? 'Upload Audio' : 'None'}</span>
-                    </label>
-                  ))}
-                </div>
-                {hotspotForm.audio_type === 'upload' && (
-                  <div className="mt-2 space-y-1.5">
-                    {/* Fix 2: show existing audio with delete option */}
-                    {hotspotForm.audio_url && !audioFile && (
-                      <div className="flex items-center gap-2 bg-brand-olive/5 border border-brand-olive/20 rounded-xl px-3 py-2">
-                        <Volume2 className="w-3.5 h-3.5 text-brand-olive flex-shrink-0" />
-                        <a href={hotspotForm.audio_url} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-brand-olive font-medium flex-1 truncate hover:underline flex items-center gap-1">
-                          Current audio <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                        </a>
-                        <button onClick={() => setHotspotForm(f => f ? { ...f, audio_url: '' } : f)}
-                          className="text-brand-cerise hover:text-brand-cerise/70 transition flex-shrink-0">
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-                    <label className="flex items-center gap-2 text-sm text-brand-cerise font-bold cursor-pointer hover:text-brand-cerise/80 transition">
-                      <Upload className="w-4 h-4" />
-                      {audioFile ? audioFile.name : hotspotForm.audio_url ? 'Replace audio' : 'Upload MP3'}
-                      <input type="file" accept="audio/*" className="hidden" onChange={e => setAudioFile(e.target.files?.[0] ?? null)} />
-                    </label>
-                    {audioFile && (
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <span className="truncate flex-1">{audioFile.name}</span>
-                        <button onClick={() => setAudioFile(null)} className="text-brand-cerise flex-shrink-0"><X className="w-3.5 h-3.5" /></button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Video section */}
-              <div>
-                <label className="block text-xs font-bold text-brand-navy mb-1.5">
-                  <Video className="w-3.5 h-3.5 inline mr-1" />Video
-                </label>
-                <div className="space-y-1.5">
-                  {(['none', 'youtube', 'upload'] as const).map(t => (
-                    <label key={t} className="flex items-center gap-2 cursor-pointer">
-                      <input type="radio" checked={hotspotForm.video_type === t} onChange={() => setHotspotForm(f => f ? { ...f, video_type: t } : f)} className="accent-brand-cerise" />
-                      <span className="text-sm text-slate-700 font-medium">{t === 'none' ? 'None' : t === 'youtube' ? 'YouTube' : 'Upload Video'}</span>
-                    </label>
-                  ))}
-                </div>
-                {hotspotForm.video_type === 'youtube' && (
-                  <input value={hotspotForm.video_ref} onChange={e => setHotspotForm(f => f ? { ...f, video_ref: e.target.value } : f)}
-                    className="mt-2 w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-navy transition"
-                    placeholder="https://youtube.com/watch?v=..." />
-                )}
-                {hotspotForm.video_type === 'upload' && (
-                  <div className="mt-2 space-y-1.5">
-                    {/* Fix 2: show existing video with delete option */}
-                    {hotspotForm.video_ref && !videoFile && (
-                      <div className="flex items-center gap-2 bg-brand-sky/5 border border-brand-sky/20 rounded-xl px-3 py-2">
-                        <Video className="w-3.5 h-3.5 text-brand-sky flex-shrink-0" />
-                        <a href={hotspotForm.video_ref} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-brand-sky font-medium flex-1 truncate hover:underline flex items-center gap-1">
-                          Current video <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                        </a>
-                        <button onClick={() => setHotspotForm(f => f ? { ...f, video_ref: '' } : f)}
-                          className="text-brand-cerise hover:text-brand-cerise/70 transition flex-shrink-0">
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-                    <label className="flex items-center gap-2 text-sm text-brand-cerise font-bold cursor-pointer hover:text-brand-cerise/80 transition">
-                      <Upload className="w-4 h-4" />
-                      {videoFile ? videoFile.name : hotspotForm.video_ref ? 'Replace video' : 'Upload Video'}
-                      <input type="file" accept="video/*" className="hidden" onChange={e => setVideoFile(e.target.files?.[0] ?? null)} />
-                    </label>
-                    {videoFile && (
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <span className="truncate flex-1">{videoFile.name}</span>
-                        <button onClick={() => setVideoFile(null)} className="text-brand-cerise flex-shrink-0"><X className="w-3.5 h-3.5" /></button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Image section */}
-              <div>
-                <label className="block text-xs font-bold text-brand-navy mb-1.5">
-                  <ImageIcon className="w-3.5 h-3.5 inline mr-1" />Display Image
-                </label>
-                {hotspotForm.image_url && !hotspotImageFile && (
-                  <div className="mb-2 relative rounded-xl overflow-hidden border-2 border-slate-200 group">
-                    <img src={hotspotForm.image_url} alt="Hotspot" className="w-full h-28 object-cover" />
-                    <button
-                      onClick={() => setHotspotForm(f => f ? { ...f, image_url: '' } : f)}
-                      className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-brand-cerise text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-                {hotspotImageFile && (
-                  <div className="mb-2 relative rounded-xl overflow-hidden border-2 border-brand-cerise/40 group">
-                    <img src={URL.createObjectURL(hotspotImageFile)} alt="Preview" className="w-full h-28 object-cover" />
-                    <button
-                      onClick={() => setHotspotImageFile(null)}
-                      className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-brand-cerise text-white flex items-center justify-center">
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-                <label className="flex items-center gap-2 text-sm text-brand-cerise font-bold cursor-pointer hover:text-brand-cerise/80 transition">
-                  <Upload className="w-4 h-4" />
-                  {hotspotImageFile ? hotspotImageFile.name : hotspotForm.image_url ? 'Replace image' : 'Upload Image'}
-                  <input type="file" accept="image/*" className="hidden"
-                    onChange={e => setHotspotImageFile(e.target.files?.[0] ?? null)} />
-                </label>
+                <label className="block text-xs font-bold text-brand-navy mb-1.5">When the dot is tapped</label>
+                <select value={hotspotForm.tap_action} onChange={e => setHotspotForm(f => f ? { ...f, tap_action: e.target.value as 'card' | 'launch' } : f)}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-navy transition">
+                  <option value="card">Open the content card</option>
+                  <option value="launch">Launch the first link, document, video or contact button straight away</option>
+                </select>
               </div>
 
               <div className="pt-3 border-t border-slate-100">

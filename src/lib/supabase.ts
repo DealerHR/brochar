@@ -81,11 +81,16 @@ export type Hotspot = {
   video_ref: string | null;
   image_url: string | null;
   display_order: number;
+  tap_action: 'card' | 'launch';
   created_at: string;
 };
 
-export type BlockKind = 'link' | 'gallery' | 'spec_table' | 'pdf' | 'action' | 'quiz' | 'pitch';
+export type BlockKind = 'text' | 'image' | 'audio' | 'video' | 'link' | 'gallery' | 'spec_table' | 'pdf' | 'action' | 'quiz' | 'pitch';
 
+export type TextData = { text: string };
+export type ImageData = { url: string; caption: string };
+export type AudioData = { mode: 'tts' | 'upload'; url: string; text: string; autoplay: boolean };
+export type VideoData = { mode: 'youtube' | 'upload'; ref: string; autoplay: boolean };
 export type LinkData = { url: string; label: string; open_mode: 'overlay' | 'newtab' };
 export type GalleryData = { images: string[] };
 export type SpecTableData = { title: string; rows: { label: string; value: string }[] };
@@ -94,7 +99,7 @@ export type ActionData = { type: 'call' | 'whatsapp' | 'enquiry'; label: string;
 export type QuizData = { question: string; options: string[]; correct: number; explanation: string };
 export type PitchData = { pitch: string; objection: string; response: string };
 
-export type BlockData = LinkData | GalleryData | SpecTableData | PdfData | ActionData | QuizData | PitchData;
+export type BlockData = TextData | ImageData | AudioData | VideoData | LinkData | GalleryData | SpecTableData | PdfData | ActionData | QuizData | PitchData;
 
 export type HotspotBlock = {
   id: string;
@@ -110,6 +115,10 @@ export const LEARN_ONLY_KINDS: BlockKind[] = ['quiz', 'pitch'];
 
 export function emptyBlockData(kind: BlockKind): BlockData {
   switch (kind) {
+    case 'text': return { text: '' };
+    case 'image': return { url: '', caption: '' };
+    case 'audio': return { mode: 'tts', url: '', text: '', autoplay: true };
+    case 'video': return { mode: 'youtube', ref: '', autoplay: true };
     case 'link': return { url: '', label: 'Open link', open_mode: 'overlay' };
     case 'gallery': return { images: [] };
     case 'spec_table': return { title: '', rows: [{ label: '', value: '' }] };

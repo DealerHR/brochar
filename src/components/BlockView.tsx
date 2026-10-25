@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  HotspotBlock, LinkData, GalleryData, SpecTableData, PdfData, ActionData, QuizData, PitchData, Tenant,
+  HotspotBlock, TextData, ImageData, AudioData, VideoData,
+  LinkData, GalleryData, SpecTableData, PdfData, ActionData, QuizData, PitchData, Tenant,
 } from '../lib/supabase';
-import { isHttpUrl } from '../lib/validation';
+import { isHttpUrl, youtubeId } from '../lib/validation';
 import {
   ExternalLink, FileText, Phone, MessageCircle, Send, X, CheckCircle2, XCircle, Lightbulb, HelpCircle, ChevronLeft, ChevronRight,
+  Volume2, Pause,
 } from 'lucide-react';
 
 export type LeadSubmit = (lead: { name: string; phone: string; message: string; hotspotId: string }) => Promise<void>;
@@ -14,14 +16,59 @@ type Props = {
   tenant: Tenant;
   brandColor: string;
   learnMode: boolean;
+  /** Text read aloud by an audio block in "read aloud" mode when it has no text of its own. */
+  fallbackSpeech: string;
+  /** True for the first audio/video block, so it may autoplay when the card opens. */
+  autoplay: boolean;
   onLinkOpen: (url: string, label: string, mode: 'overlay' | 'newtab') => void;
   onLead: LeadSubmit;
   onMedia?: () => void;
 };
 
 /** Renders one hotspot content block inside the AR card. */
-export default function BlockView({ block, tenant, brandColor, learnMode, onLinkOpen, onLead, onMedia }: Props) {
+export default function BlockView({ block, tenant, brandColor, learnMode, fallbackSpeech, autoplay, onLinkOpen, onLead, onMedia }: Props) {
   switch (block.kind) {
+    case 'text': {
+      const d = block.data as TextData;
+      if (!d.text.trim()) return null;
+      return <p className="text-slate-600 text-sm leading-relaxed whitespace-pre-line">{d.text}</p>;
+    }
+    case 'image': {
+      const d = block.data as ImageData;
+      if (!isHttpUrl(d.url)) return null;
+      return (
+        <figure className="rounded-xl overflow-hidden border border-slate-100">
+          <img src={d.url} alt={d.caption || ''} className="w-full object-contain max-h-56 bg-slate-50" />
+          {d.caption && <figcaption className="text-xs text-slate-500 px-3 py-2">{d.caption}</figcaption>}
+        </figure>
+      );
+    }
+    case 'audio': {
+      const d = block.data as AudioData;
+      return <AudioBlock d={d} brandColor={brandColor} fallbackSpeech={fallbackSpeech} autoplay={autoplay && d.autoplay} onMedia={onMedia} />;
+    }
+    case 'video': {
+      const d = block.data as VideoData;
+      const auto = autoplay && d.autoplay;
+      if (d.mode === 'youtube') {
+        const id = youtubeId(d.ref);
+        if (!id) return null;
+        return (
+          <div className="rounded-xl overflow-hidden bg-black aspect-video">
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${id}?rel=0&playsinline=1${auto ? '&autoplay=1' : ''}`}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen className="w-full h-full border-0" title="Video" onLoad={() => { if (auto) onMedia?.(); }} />
+          </div>
+        );
+      }
+      if (!isHttpUrl(d.ref)) return null;
+      return (
+        <div className="rounded-xl overflow-hidden bg-black aspect-video">
+          <video src={d.ref} controls autoPlay={auto} playsInline className="w-full h-full" onPlay={() => onMedia?.()} />
+        </div>
+      );
+    }
     case 'link': {
       const d = block.data as LinkData;
       if (!isHttpUrl(d.url)) return null;
@@ -103,6 +150,65 @@ export default function BlockView({ block, tenant, brandColor, learnMode, onLink
       );
     }
   }
+}
+
+function AudioBlock({ d, brandColor, fallbackSpeech, autoplay, onMedia }: {
+  d: AudioData; brandColor: string; fallbackSpeech: string; autoplay: boolean; onMedia?: () => void;
+}) {
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speech = (d.text || fallbackSpeech).trim();
+  const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const available = d.mode === 'upload' ? isHttpUrl(d.url) : (canSpeak && speech.length > 0);
+
+  function stop() {
+    if (d.mode === 'upload') { audioRef.current?.pause(); }
+    else if (canSpeak) window.speechSynthesis.cancel();
+    setPlaying(false);
+  }
+
+  function play() {
+    if (d.mode === 'upload') {
+      if (!audioRef.current) {
+        const a = new Audio(d.url);
+        a.onended = () => setPlaying(false);
+        a.onerror = () => setPlaying(false);
+        audioRef.current = a;
+      }
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    } else {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(speech);
+      u.lang = 'en-IN';
+      u.onend = () => setPlaying(false);
+      u.onerror = () => setPlaying(false);
+      window.speechSynthesis.speak(u);
+      setPlaying(true);
+    }
+    onMedia?.();
+  }
+
+  useEffect(() => {
+    if (autoplay && available) play();
+    return () => stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!available) return null;
+  return (
+    <button onClick={() => (playing ? stop() : play())}
+      className="w-full inline-flex items-center gap-3 text-left text-sm font-semibold px-4 py-3 rounded-xl text-white transition active:scale-[0.99]"
+      style={{ backgroundColor: brandColor }}>
+      <span className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+        {playing ? <Pause className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+      </span>
+      <span className="flex-1">{playing ? 'Playing… tap to stop' : 'Listen'}</span>
+      {playing && <span className="flex gap-0.5 items-end h-4">
+        {[0, 1, 2].map(i => <span key={i} className="w-1 bg-white/80 rounded-full animate-pulse" style={{ height: `${8 + i * 4}px`, animationDelay: `${i * 150}ms` }} />)}
+      </span>}
+    </button>
+  );
 }
 
 function Gallery({ images, brandColor }: { images: string[]; brandColor: string }) {
