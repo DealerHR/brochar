@@ -37,6 +37,33 @@ type Snippet = { key: string; source: Source; text: string };
 
 function clean(s: string) { return s.replace(/\s+/g, ' ').trim(); }
 
+type ModelJson = { answer?: unknown; language?: unknown; tier?: unknown; sources?: unknown };
+
+/**
+ * Reads the model's JSON reply. Falls back to salvaging the fields from a reply that
+ * was cut off or wrapped in prose, so a long Hindi answer never turns into a parse error.
+ */
+function parseModelJson(text: string): ModelJson {
+  const body = text.replace(/```(?:json)?/g, '').trim();
+  const m = body.match(/\{[\s\S]*\}/);
+  try { return JSON.parse(m ? m[0] : body) as ModelJson; } catch { /* salvage below */ }
+
+  const field = (name: string) => {
+    const r = new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"?`).exec(body);
+    if (!r) return undefined;
+    try { return JSON.parse(`"${r[1]}"`) as string; } catch { return r[1].replace(/\\"/g, '"'); }
+  };
+  const answer = field('answer');
+  if (!answer) {
+    // No JSON at all: treat the whole reply as the answer.
+    if (body && !body.startsWith('{')) return { answer: body, tier: 'explain' };
+    throw new Error(`model reply not readable: ${body.slice(0, 120)}`);
+  }
+  const srcMatch = /"sources"\s*:\s*\[([^\]]*)/.exec(body);
+  const sources = srcMatch ? Array.from(srcMatch[1].matchAll(/"(S\d+)"/g), x => x[1]) : [];
+  return { answer, language: field('language'), tier: field('tier'), sources };
+}
+
 /** Crude keyword overlap so the context stays small on big brochures. */
 function rank(snippets: Snippet[], question: string): Snippet[] {
   const q = question.toLowerCase().split(/[^a-z0-9ऀ-෿]+/).filter(w => w.length > 2);
@@ -184,15 +211,16 @@ ${contextText || '(no sources available)'}`;
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 400, system,
+        // Devanagari and other Indic scripts cost several tokens per character, so the
+        // JSON envelope needs real headroom; 400 cut Hindi answers mid-string.
+        model: MODEL, max_tokens: 1200, system,
         messages: [{ role: 'user', content: question }],
       }),
     });
     if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const out = await res.json();
     const text: string = (out.content ?? []).map((c: any) => c.text ?? '').join('');
-    const m = text.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : text);
+    const parsed = parseModelJson(text);
     modelAnswer = clean(String(parsed.answer ?? ''));
     language = String(parsed.language ?? 'en').toLowerCase().slice(0, 8) || 'en';
     const t = String(parsed.tier ?? 'handoff');

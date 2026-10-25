@@ -181,11 +181,31 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
 
       // One permission prompt for camera and microphone together (the mic is for Ask AI),
       // so the user is not asked a second time later. MindAR then opens the camera itself.
+      // Phones with several rear cameras (incl. a mono/depth sensor) can hand the second
+      // request a different camera if the first is still being released, which showed up
+      // as a black-and-white feed. So the camera from this prompt is handed straight to
+      // MindAR, and every later camera request (rotation restarts) is pinned to that device.
       const wantsMic = loaded.tenant.assistant_scope !== 'off' && (loaded.tenant.assistant_scope !== 'team' || teamMode);
-      if (wantsMic && navigator.mediaDevices?.getUserMedia) {
+      const md = navigator.mediaDevices;
+      if (wantsMic && md?.getUserMedia) {
         try {
-          const warm = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
-          warm.getTracks().forEach(t => t.stop());
+          const warm = await md.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
+          warm.getAudioTracks().forEach(t => t.stop());
+          const videoTracks = warm.getVideoTracks();
+          const deviceId = videoTracks[0]?.getSettings().deviceId;
+          let pending: MediaStream | null = videoTracks.length ? new MediaStream(videoTracks) : null;
+          const original = md.getUserMedia.bind(md);
+          const patched: typeof md.getUserMedia = (constraints) => {
+            if (!constraints?.video) return original(constraints);
+            if (pending) { const s = pending; pending = null; return Promise.resolve(s); }
+            if (deviceId) return original({ ...constraints, video: { deviceId: { exact: deviceId } } });
+            return original(constraints);
+          };
+          md.getUserMedia = patched;
+          listenersRef.current.push(() => {
+            if (md.getUserMedia === patched) md.getUserMedia = original;
+            pending?.getTracks().forEach(t => t.stop());
+          });
         } catch { /* mic refused or unavailable: Ask AI falls back to typing */ }
       }
 
