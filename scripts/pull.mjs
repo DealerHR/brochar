@@ -15,7 +15,7 @@ const OWNER = 'DealerHR';
 const REPO = 'brochar';
 const BRANCH = process.env.BRANCH || 'main';
 const PRUNE_DIRS = ['src', 'public', 'supabase', 'scripts'];
-const SKIP = /^(node_modules|dist|\.bolt|\.git)(\/|$)|^\.env/;
+const SKIP = /^(node_modules|dist|\.bolt|\.git)(\/|$)|^\.env(\.local)?$/;
 
 const prune = process.argv.includes('--prune');
 
