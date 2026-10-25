@@ -175,6 +175,7 @@ ALTER TABLE brochures ALTER COLUMN product_id SET NOT NULL;
 ALTER TABLE brochure_pages ALTER COLUMN brochure_id SET NOT NULL;
 ALTER TABLE hotspots ALTER COLUMN page_id SET NOT NULL;
 ALTER TABLE ar_events ALTER COLUMN brochure_id SET NOT NULL;
+ALTER TABLE brochures ADD COLUMN IF NOT EXISTS pages_changed_at timestamptz;
 
 -- One brochure per product (the app already assumes this with maybeSingle()).
 -- Keep the newest row if duplicates somehow exist.
@@ -186,6 +187,25 @@ DO $$ BEGIN
     ALTER TABLE brochures ADD CONSTRAINT brochures_product_id_key UNIQUE (product_id);
   END IF;
 END $$;
+
+-- Repair duplicate page indexes left by an old builder bug (it reused a
+-- count-based index after a deletion). Nothing is deleted: pages are
+-- renumbered densely in (page_index, upload time) order, and the affected
+-- brochures are flagged so the builder asks for a recompile.
+WITH ranked AS (
+  SELECT id, brochure_id, page_index,
+         row_number() OVER (PARTITION BY brochure_id ORDER BY page_index, created_at, id) - 1 AS new_index
+  FROM brochure_pages
+),
+changed AS (
+  UPDATE brochure_pages p
+  SET page_index = r.new_index
+  FROM ranked r
+  WHERE p.id = r.id AND p.page_index <> r.new_index
+  RETURNING p.brochure_id
+)
+UPDATE brochures b SET pages_changed_at = now(), updated_at = now()
+WHERE b.id IN (SELECT brochure_id FROM changed);
 
 -- Unique page index within a brochure.
 DO $$ BEGIN
@@ -225,7 +245,6 @@ DO $$ BEGIN
 END $$;
 
 -- Track page changes so the UI can flag a stale .mind file.
-ALTER TABLE brochures ADD COLUMN IF NOT EXISTS pages_changed_at timestamptz;
 
 CREATE OR REPLACE FUNCTION touch_brochure_pages_changed()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
