@@ -1,17 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Link } from '../../lib/router';
 import { supabase, Tenant } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import { Plus, ChevronRight } from 'lucide-react';
 
 export default function ClientsListPage() {
+  const { isPlatformAdmin, memberships } = useAuth();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [productCounts, setProductCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [isPlatformAdmin, memberships.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
-    const { data } = await supabase.from('tenants').select('*').order('created_at', { ascending: false });
+    // Active clients are publicly readable (their landing pages are public), so
+    // client users are limited here to the workspaces they belong to.
+    let q = supabase.from('tenants').select('*').order('created_at', { ascending: false });
+    if (!isPlatformAdmin) q = q.in('id', memberships.map(m => m.tenant_id));
+    const { data } = await q;
     if (data) {
       setTenants(data);
       const counts: Record<string, number> = {};
@@ -32,12 +38,14 @@ export default function ClientsListPage() {
           <h1 className="text-3xl font-black text-brand-navy">Clients</h1>
           <p className="text-slate-400 text-sm mt-1">Brands and their AR brochure products</p>
         </div>
-        <Link
-          to="/admin/clients/new"
-          className="inline-flex items-center gap-2 bg-brand-cerise hover:bg-brand-cerise/90 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition shadow-lg shadow-brand-cerise/20"
-        >
-          <Plus className="w-4 h-4" /> Add Client
-        </Link>
+        {isPlatformAdmin && (
+          <Link
+            to="/admin/clients/new"
+            className="inline-flex items-center gap-2 bg-brand-cerise hover:bg-brand-cerise/90 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition shadow-lg shadow-brand-cerise/20"
+          >
+            <Plus className="w-4 h-4" /> Add Client
+          </Link>
+        )}
       </div>
 
       {loading ? (
@@ -50,11 +58,13 @@ export default function ClientsListPage() {
             <Plus className="w-7 h-7 text-brand-olive" />
           </div>
           <p className="text-brand-navy font-bold text-lg mb-1">No clients yet</p>
-          <p className="text-slate-400 text-sm mb-5">Create your first brand client to get started.</p>
-          <Link to="/admin/clients/new"
-            className="inline-flex items-center gap-2 bg-brand-navy text-white font-bold px-5 py-2.5 rounded-xl text-sm transition hover:bg-brand-navy/90">
-            <Plus className="w-4 h-4" /> Create First Client
-          </Link>
+          <p className="text-slate-400 text-sm mb-5">{isPlatformAdmin ? 'Create your first brand client to get started.' : 'You have not been added to a client workspace yet.'}</p>
+          {isPlatformAdmin && (
+            <Link to="/admin/clients/new"
+              className="inline-flex items-center gap-2 bg-brand-navy text-white font-bold px-5 py-2.5 rounded-xl text-sm transition hover:bg-brand-navy/90">
+              <Plus className="w-4 h-4" /> Create First Client
+            </Link>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

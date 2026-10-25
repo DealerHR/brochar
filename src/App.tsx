@@ -10,17 +10,36 @@ import ClientDetailPage from './pages/admin/ClientDetailPage';
 import NewProductPage from './pages/admin/NewProductPage';
 import ProductBuilderPage from './pages/admin/ProductBuilderPage';
 import AnalyticsPage from './pages/admin/AnalyticsPage';
+import TeamPage from './pages/admin/TeamPage';
 import ClientLandingPage from './pages/ClientLandingPage';
 import ARPlayerPage from './pages/ARPlayerPage';
+import { ShieldOff } from 'lucide-react';
+
+function NoAccess() {
+  const { signOut, user } = useAuth();
+  return (
+    <div className="min-h-screen bg-brand-cream/30 flex flex-col items-center justify-center p-6 text-center">
+      <ShieldOff className="w-12 h-12 text-brand-navy/30 mb-4" />
+      <h1 className="text-2xl font-black text-brand-navy mb-2">No workspace access</h1>
+      <p className="text-slate-500 text-sm max-w-sm mb-6">
+        {user?.email} is signed in but has not been added to any client workspace yet. Ask your BrochAR administrator to add you.
+      </p>
+      <button onClick={() => signOut()} className="bg-brand-navy text-white text-sm font-bold px-5 py-2.5 rounded-xl">
+        Sign out
+      </button>
+    </div>
+  );
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { session, loading } = useAuth();
+  const { session, loading, hasAdminAccess } = useAuth();
   if (loading) return (
     <div className="min-h-screen bg-brand-navy flex items-center justify-center">
       <div className="w-6 h-6 border-2 border-brand-cerise border-t-transparent rounded-full animate-spin" />
     </div>
   );
   if (!session) return <Navigate to="/login" replace />;
+  if (!hasAdminAccess) return <NoAccess />;
   return <>{children}</>;
 }
 
@@ -41,6 +60,7 @@ export default function App() {
             <Route path="clients/:clientId/products/new" element={<NewProductPage />} />
             <Route path="clients/:clientId/products/:productId" element={<ProductBuilderPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="team" element={<TeamPage />} />
           </Route>
 
           {/* Public client pages */}

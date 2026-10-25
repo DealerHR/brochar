@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 type Params = Record<string, string>;
@@ -138,7 +139,7 @@ export function Route(_props: {
 
 export function Navigate({ to, replace }: { to: string; replace?: boolean }) {
   const { navigate } = useContext(RouterContext);
-  useEffect(() => { navigate(to, replace); }, [to, replace]);
+  useEffect(() => { navigate(to, replace); }, [to, replace, navigate]);
   return null;
 }
 

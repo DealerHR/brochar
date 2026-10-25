@@ -1,9 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+export const STORAGE_BUCKET = 'brochure-assets';
+
+export type TenantRole = 'owner' | 'editor' | 'viewer';
 
 export type Tenant = {
   id: string;
@@ -13,6 +21,13 @@ export type Tenant = {
   brand_color: string;
   description: string | null;
   is_active: boolean;
+  created_at: string;
+};
+
+export type TenantMember = {
+  user_id: string;
+  email: string;
+  role: TenantRole;
   created_at: string;
 };
 
@@ -35,6 +50,7 @@ export type Brochure = {
   status: 'draft' | 'active' | 'inactive';
   mind_file_url: string | null;
   compiled_at: string | null;
+  pages_changed_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -65,12 +81,18 @@ export type Hotspot = {
   created_at: string;
 };
 
+export type ArEventType = 'session_start' | 'target_found' | 'hotspot_tapped' | 'media_played';
+
 export type ArEvent = {
   id: string;
   brochure_id: string;
+  tenant_id: string | null;
+  product_id: string | null;
+  session_id: string | null;
   page_id: string | null;
   hotspot_id: string | null;
-  event_type: 'session_start' | 'target_found' | 'hotspot_tapped';
+  event_type: ArEventType;
+  platform: 'ios' | 'android' | 'desktop' | 'other' | null;
   occurred_at: string;
   date_key: string;
 };

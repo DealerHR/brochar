@@ -2,18 +2,19 @@ import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from '../lib/router';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap
+  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap, ShieldCheck
 } from 'lucide-react';
 
 const navItems = [
-  { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/admin/clients', label: 'Clients', icon: Users, end: false },
-  { to: '/admin/analytics', label: 'Analytics', icon: BarChart2, end: false },
+  { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true, adminOnly: false },
+  { to: '/admin/clients', label: 'Clients', icon: Users, end: false, adminOnly: false },
+  { to: '/admin/analytics', label: 'Analytics', icon: BarChart2, end: false, adminOnly: false },
+  { to: '/admin/team', label: 'Platform Team', icon: ShieldCheck, end: false, adminOnly: true },
 ];
 
 export default function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { signOut, user } = useAuth();
+  const { signOut, user, isPlatformAdmin, memberships } = useAuth();
   const navigate = useNavigate();
 
   async function handleSignOut() {
@@ -41,7 +42,7 @@ export default function AdminLayout() {
         </div>
 
         <nav className="flex-1 px-3 py-5 space-y-1">
-          {navItems.map(({ to, label, icon: Icon, end }) => (
+          {navItems.filter(n => !n.adminOnly || isPlatformAdmin).map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -72,7 +73,9 @@ export default function AdminLayout() {
               {user?.email?.[0] ?? 'A'}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-bold text-white truncate">Admin</p>
+              <p className="text-xs font-bold text-white truncate">
+                {isPlatformAdmin ? 'Platform admin' : memberships.length === 1 ? `Client ${memberships[0].role}` : 'Client user'}
+              </p>
               <p className="text-xs text-white/40 truncate">{user?.email}</p>
             </div>
           </div>

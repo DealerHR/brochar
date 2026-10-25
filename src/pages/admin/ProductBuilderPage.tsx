@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from '../../lib/router';
 import { supabase, Brochure, BrochurePage, Hotspot, Product, Tenant } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
+import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR } from '../../lib/mindar';
+import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../../lib/storage';
+import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
 import {
   ArrowLeft, Upload, FileImage, Trash2, Plus, X, Volume2, Video, Save,
-  Zap, CheckCircle2, FilePlus, ExternalLink, ImageIcon
+  Zap, CheckCircle2, FilePlus, ExternalLink, ImageIcon, AlertTriangle, Lock
 } from 'lucide-react';
-
-declare global {
-  interface Window {
-    pdfjsLib: { getDocument: (opts: unknown) => { promise: Promise<unknown> } };
-    MINDAR: { IMAGE: { Compiler: new () => { compileImageTargets: (imgs: HTMLImageElement[], cb: (p: number) => void) => Promise<unknown> } } };
-    Worker: new (url: string, opts?: WorkerOptions) => Worker;
-  }
-}
 
 type HotspotForm = {
   label: string;
@@ -26,19 +22,17 @@ type HotspotForm = {
   display_order: number;
 };
 
-const CDN = 'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.1.4/dist/';
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
 
-function loadScript(src: string): Promise<void> {
-  return new Promise((res, rej) => {
-    const s = document.createElement('script');
-    s.src = src; s.onload = () => res(); s.onerror = rej;
-    document.head.appendChild(s);
-  });
+function newId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export default function ProductBuilderPage() {
   const { clientId, productId } = useParams();
   const navigate = useNavigate();
+  const { canEdit } = useAuth();
+  const editable = canEdit(clientId);
 
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [product, setProduct] = useState<Product | null>(null);
@@ -58,12 +52,13 @@ export default function ProductBuilderPage() {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [hotspotImageFile, setHotspotImageFile] = useState<File | null>(null);
+  const [notice, setNotice] = useState('');
   const imageRef = useRef<HTMLDivElement>(null);
   const pageFileInputRef = useRef<HTMLInputElement>(null);
   // Tracks drag state without causing re-renders on every mousemove
   const dragRef = useRef<{ hotspotId: string; pageId: string; moved: boolean } | null>(null);
 
-  useEffect(() => { load(); }, [productId]);
+  useEffect(() => { load(); }, [productId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setSelectedHotspot(null);
@@ -109,62 +104,73 @@ export default function ProductBuilderPage() {
 
   async function ensureBrochure(): Promise<Brochure> {
     if (brochure) return brochure;
-    const { data } = await supabase.from('brochures').insert({ product_id: productId, title: product?.name ?? 'Brochure', status: 'draft' }).select().single();
-    setBrochure(data!);
-    return data!;
+    const { data, error } = await supabase.from('brochures')
+      .insert({ product_id: productId, title: product?.name ?? 'Brochure', status: 'draft' }).select().single();
+    if (error || !data) throw new Error(error?.message ?? 'Could not create brochure');
+    setBrochure(data);
+    return data;
   }
 
   async function handleFileUpload(files: File[]) {
-    if (!files.length) return;
+    if (!files.length || !editable) return;
+    setNotice('');
+    for (const f of files) {
+      const problem = f.type === 'application/pdf' ? fileTooLarge(f, MAX_PDF_BYTES) : fileTooLarge(f, MAX_IMAGE_BYTES);
+      if (problem) { setNotice(problem); return; }
+    }
     setUploading(true);
     setUploadProgress([]);
-    const br = await ensureBrochure();
-    const existingCount = pages.length;
+    try {
+      const br = await ensureBrochure();
+      // Page indexes may have gaps after deletions, so always continue from the
+      // highest existing index. Reusing a count-based index overwrote other pages.
+      let nextIndex = pages.reduce((m, p) => Math.max(m, p.page_index), -1) + 1;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const pageIndex = existingCount + i;
-      setUploadProgress(p => [...p, `Uploading page ${pageIndex + 1}...`]);
-
-      if (file.type === 'application/pdf') {
-        await uploadPDF(file, br.id, pageIndex);
-      } else {
-        await uploadImage(file, br.id, pageIndex);
+      for (const file of files) {
+        setUploadProgress(p => [...p, `Uploading page ${nextIndex + 1}...`]);
+        if (file.type === 'application/pdf') {
+          nextIndex = await uploadPDF(file, br.id, nextIndex);
+        } else {
+          await uploadImage(file, br.id, nextIndex);
+          nextIndex += 1;
+        }
       }
+      await loadPages(br.id);
+      await refreshBrochure(br.id);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Upload failed.');
+    } finally {
+      setUploading(false);
+      setUploadProgress([]);
+      // Reset the input so selecting the same file again fires onChange next time.
+      if (pageFileInputRef.current) pageFileInputRef.current.value = '';
     }
-    await loadPages(br.id);
-    setUploading(false);
-    setUploadProgress([]);
-    // Reset the input so selecting the same file again fires onChange next time.
-    if (pageFileInputRef.current) pageFileInputRef.current.value = '';
   }
 
-  async function uploadImage(file: File, brochureId: string, pageIndex: number) {
-    const path = `${clientId}/${productId}/pages/page_${pageIndex}.jpg`;
-    await supabase.storage.from('brochure-assets').upload(path, file, { upsert: true, contentType: 'image/jpeg' });
-    const { data: urlData } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-    // Append a timestamp so the CDN serves the freshly-uploaded file instead of a stale
-    // cached version when the same path is reused after deletion and re-upload.
-    const imageUrl = `${urlData.publicUrl}?t=${Date.now()}`;
-    await supabase.from('brochure_pages').insert({ brochure_id: brochureId, page_index: pageIndex, image_url: imageUrl });
+  async function refreshBrochure(brochureId: string) {
+    const { data } = await supabase.from('brochures').select('*').eq('id', brochureId).maybeSingle();
+    if (data) setBrochure(data);
   }
 
-  async function uploadPDF(file: File, brochureId: string, startIndex: number) {
-    if (!window.pdfjsLib) {
-      await new Promise<void>((res, rej) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-        s.onload = () => res(); s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    const pdfData = await file.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: pdfData }).promise as { numPages: number; getPage: (n: number) => Promise<{ getViewport: (opts: { scale: number }) => { width: number; height: number }; render: (opts: unknown) => { promise: Promise<void> } }> };
+  async function uploadImage(file: File | Blob, brochureId: string, pageIndex: number) {
+    // Unique object name per page so a re-upload can never overwrite another page.
+    const ext = file instanceof File ? fileExtension(file, 'jpg') : 'jpg';
+    const path = `${clientId}/${productId}/pages/${newId()}.${ext}`;
+    const image_url = await uploadFile(path, file, file.type || 'image/jpeg');
+    const { error } = await supabase.from('brochure_pages').insert({ brochure_id: brochureId, page_index: pageIndex, image_url });
+    if (error) { await removeFiles([path]); throw new Error(error.message); }
+  }
 
+  /** Renders each PDF page to JPEG and uploads it. Returns the next free page index. */
+  async function uploadPDF(file: File, brochureId: string, startIndex: number): Promise<number> {
+    await loadScript(PDFJS_CDN + 'pdf.min.js');
+    const pdfjs = window.pdfjsLib;
+    if (!pdfjs) throw new Error('PDF converter did not load.');
+    pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_CDN + 'pdf.worker.min.js';
+    const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+
+    let pageIndex = startIndex;
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const pageIndex = startIndex + pageNum - 1;
       setUploadProgress(p => [...p.slice(0, -1), `Converting PDF page ${pageNum}/${pdf.numPages}...`]);
       const page = await pdf.getPage(pageNum);
       const viewport = page.getViewport({ scale: 150 / 72 });
@@ -173,15 +179,17 @@ export default function ProductBuilderPage() {
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d')!;
       await page.render({ canvasContext: ctx, viewport }).promise;
-      const blob = await new Promise<Blob>(r => canvas.toBlob(b => r(b!), 'image/jpeg', 0.9));
-      await uploadImage(new File([blob], `page_${pageIndex}.jpg`), brochureId, pageIndex);
+      const blob = await new Promise<Blob>((r, j) => canvas.toBlob(b => b ? r(b) : j(new Error('Could not render PDF page')), 'image/jpeg', 0.9));
+      await uploadImage(blob, brochureId, pageIndex);
+      pageIndex += 1;
     }
+    return pageIndex;
   }
 
   async function handleImageClick(e: React.MouseEvent<HTMLDivElement>) {
     // Fix 1: ignore click if a drag just finished
     if (dragRef.current?.moved) return;
-    if (!placingMode || !selectedPage || !brochure) return;
+    if (!placingMode || !selectedPage || !brochure || !editable) return;
     const rect = imageRef.current!.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
@@ -223,7 +231,7 @@ export default function ProductBuilderPage() {
 
   // Fix 1: drag handlers for repositioning hotspots
   function onHotspotPointerDown(e: React.PointerEvent<HTMLButtonElement>, h: Hotspot) {
-    if (placingMode) return;
+    if (placingMode || !editable) return;
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = { hotspotId: h.id, pageId: h.page_id, moved: false };
@@ -261,30 +269,41 @@ export default function ProductBuilderPage() {
   }
 
   async function saveHotspot() {
-    if (!selectedHotspot || !hotspotForm) return;
-    setSavingHotspot(true);
-    let audio_url = hotspotForm.audio_url;
-    let video_ref = hotspotForm.video_ref;
-    let image_url = hotspotForm.image_url;
+    if (!selectedHotspot || !hotspotForm || !editable) return;
+    setNotice('');
+    const label = hotspotForm.label.trim();
+    if (!label) { setNotice('Give the hotspot a label.'); return; }
+    const colorProblem = hexColorError(hotspotForm.dot_color);
+    if (colorProblem) { setNotice(colorProblem); return; }
+    if (hotspotForm.video_type === 'youtube' && !youtubeId(hotspotForm.video_ref)) {
+      setNotice('Paste a valid YouTube link or video id.'); return;
+    }
+    const sizeProblem =
+      (audioFile && fileTooLarge(audioFile, MAX_AUDIO_BYTES)) ||
+      (videoFile && fileTooLarge(videoFile, MAX_VIDEO_BYTES)) ||
+      (hotspotImageFile && fileTooLarge(hotspotImageFile, MAX_IMAGE_BYTES)) || null;
+    if (sizeProblem) { setNotice(sizeProblem); return; }
 
-    if (audioFile && hotspotForm.audio_type === 'upload') {
-      const path = `${clientId}/${productId}/audio/${selectedHotspot.id}.mp3`;
-      await supabase.storage.from('brochure-assets').upload(path, audioFile, { upsert: true });
-      const { data } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-      audio_url = data.publicUrl;
-    }
-    if (videoFile && hotspotForm.video_type === 'upload') {
-      const path = `${clientId}/${productId}/video/${selectedHotspot.id}.mp4`;
-      await supabase.storage.from('brochure-assets').upload(path, videoFile, { upsert: true });
-      const { data } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-      video_ref = data.publicUrl;
-    }
-    if (hotspotImageFile) {
-      const ext = hotspotImageFile.name.split('.').pop() ?? 'jpg';
-      const path = `${clientId}/${productId}/hotspot-images/${selectedHotspot.id}.${ext}`;
-      await supabase.storage.from('brochure-assets').upload(path, hotspotImageFile, { upsert: true });
-      const { data } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-      image_url = data.publicUrl;
+    setSavingHotspot(true);
+    let audio_url = hotspotForm.audio_type === 'upload' ? hotspotForm.audio_url : '';
+    let video_ref = hotspotForm.video_type === 'none' ? '' : hotspotForm.video_type === 'youtube' ? youtubeId(hotspotForm.video_ref)! : hotspotForm.video_ref;
+    let image_url = hotspotForm.image_url;
+    const base = `${clientId}/${productId}`;
+
+    try {
+      if (audioFile && hotspotForm.audio_type === 'upload') {
+        audio_url = await uploadFile(`${base}/audio/${selectedHotspot.id}.${fileExtension(audioFile, 'mp3')}`, audioFile);
+      }
+      if (videoFile && hotspotForm.video_type === 'upload') {
+        video_ref = await uploadFile(`${base}/video/${selectedHotspot.id}.${fileExtension(videoFile, 'mp4')}`, videoFile);
+      }
+      if (hotspotImageFile) {
+        image_url = await uploadFile(`${base}/hotspot-images/${selectedHotspot.id}.${fileExtension(hotspotImageFile, 'jpg')}`, hotspotImageFile);
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Upload failed.');
+      setSavingHotspot(false);
+      return;
     }
 
     // The user may have dragged the dot while the form was open. selectedHotspot is a
@@ -295,8 +314,20 @@ export default function ProductBuilderPage() {
     const pos_x = liveHotspot?.pos_x ?? selectedHotspot.pos_x;
     const pos_y = liveHotspot?.pos_y ?? selectedHotspot.pos_y;
 
-    await supabase.from('hotspots').update({ ...hotspotForm, audio_url, video_ref, image_url }).eq('id', selectedHotspot.id);
-    const updated = { ...selectedHotspot, ...hotspotForm, audio_url, video_ref, image_url, pos_x, pos_y };
+    const payload = {
+      ...hotspotForm, label,
+      description: hotspotForm.description.trim() || null,
+      audio_url: audio_url || null, video_ref: video_ref || null, image_url: image_url || null,
+    };
+    const { error } = await supabase.from('hotspots').update(payload).eq('id', selectedHotspot.id);
+    if (error) { setNotice(error.message); setSavingHotspot(false); return; }
+    // Remove files the user cleared from the form.
+    await removeFiles([
+      selectedHotspot.audio_url && !payload.audio_url ? pathFromPublicUrl(selectedHotspot.audio_url) : null,
+      selectedHotspot.video_type === 'upload' && selectedHotspot.video_ref && (!payload.video_ref || hotspotForm.video_type !== 'upload') ? pathFromPublicUrl(selectedHotspot.video_ref) : null,
+      selectedHotspot.image_url && !payload.image_url ? pathFromPublicUrl(selectedHotspot.image_url) : null,
+    ]);
+    const updated: Hotspot = { ...selectedHotspot, ...payload, pos_x, pos_y };
     setHotspots(h => ({
       ...h,
       [selectedHotspot.page_id]: (h[selectedHotspot.page_id] ?? []).map(item => item.id === selectedHotspot.id ? updated : item),
@@ -309,9 +340,20 @@ export default function ProductBuilderPage() {
     setHotspotImageFile(null);
   }
 
+  function hotspotFilePaths(h: Hotspot) {
+    return [
+      h.audio_type === 'upload' ? pathFromPublicUrl(h.audio_url) : null,
+      h.video_type === 'upload' ? pathFromPublicUrl(h.video_ref) : null,
+      pathFromPublicUrl(h.image_url),
+    ];
+  }
+
   async function deleteHotspot() {
-    if (!selectedHotspot) return;
-    await supabase.from('hotspots').delete().eq('id', selectedHotspot.id);
+    if (!selectedHotspot || !editable) return;
+    if (!window.confirm(`Delete hotspot "${selectedHotspot.label}"?`)) return;
+    const { error } = await supabase.from('hotspots').delete().eq('id', selectedHotspot.id);
+    if (error) { setNotice(error.message); return; }
+    await removeFiles(hotspotFilePaths(selectedHotspot));
     setHotspots(h => ({
       ...h,
       [selectedHotspot.page_id]: (h[selectedHotspot.page_id] ?? []).filter(item => item.id !== selectedHotspot.id),
@@ -321,69 +363,58 @@ export default function ProductBuilderPage() {
   }
 
   async function deletePage(page: BrochurePage) {
-    await supabase.from('brochure_pages').delete().eq('id', page.id);
+    if (!editable) return;
+    const count = (hotspots[page.id] ?? []).length;
+    if (!window.confirm(`Delete page ${page.page_index + 1}${count ? ` and its ${count} hotspot${count === 1 ? '' : 's'}` : ''}? You will need to compile targets again.`)) return;
+    const { error } = await supabase.from('brochure_pages').delete().eq('id', page.id);
+    if (error) { setNotice(error.message); return; }
+    await removeFiles([pathFromPublicUrl(page.image_url), ...(hotspots[page.id] ?? []).flatMap(hotspotFilePaths)]);
     setPages(p => p.filter(x => x.id !== page.id));
+    setHotspots(h => { const copy = { ...h }; delete copy[page.id]; return copy; });
     if (selectedPage?.id === page.id) setSelectedPage(pages.find(p => p.id !== page.id) ?? null);
+    if (brochure) await refreshBrochure(brochure.id);
   }
 
   async function compileTargets() {
-    if (pages.length === 0) return alert('Upload at least one page first.');
+    if (!editable) return;
+    if (pages.length === 0) { setNotice('Upload at least one page first.'); return; }
+    setNotice('');
     setCompiling(true);
     setCompileProgress(0);
     try {
-      const [cr, ctr] = await Promise.all([
-        fetch(CDN + 'compiler.worker.prod.js'),
-        fetch(CDN + 'controller.worker.prod.js'),
-      ]);
-      const compilerBlob = URL.createObjectURL(new Blob([await cr.text()], { type: 'application/javascript' }));
-      const controllerBlob = URL.createObjectURL(new Blob([await ctr.text()], { type: 'application/javascript' }));
+      // Only load the compiler build (no Three.js), which avoids TF.js double-registration.
+      await loadScript(MINDAR_CDN + 'mindar-image.prod.js');
+      const Compiler = requireMindAR().IMAGE.Compiler;
 
-      const _W = window.Worker;
-      window.Worker = function (url: string, opts?: WorkerOptions) {
-        if (typeof url === 'string' && !url.startsWith('blob:')) {
-          if (/compiler[./]worker/.test(url)) url = compilerBlob;
-          if (/controller[./]worker/.test(url)) url = controllerBlob;
-        }
-        return new _W(url, opts);
-      } as unknown as typeof Worker;
-
-      // Fix 5: only load mindar-image.prod.js (compiler only, no THREE.js = no kernel re-registration warnings)
-      if (!document.querySelector('script[src*="mindar-image.prod.js"]')) {
-        await loadScript(CDN + 'mindar-image.prod.js');
-      }
-      const SavedCompiler = window.MINDAR.IMAGE.Compiler;
-
-      const imgs = await Promise.all(pages.map(pg => new Promise<HTMLImageElement>((res, rej) => {
+      // Compile in page_index order; the player maps anchors by the same order.
+      const sorted = [...pages].sort((a, b) => a.page_index - b.page_index);
+      const imgs = await Promise.all(sorted.map(pg => new Promise<HTMLImageElement>((res, rej) => {
         const img = new Image(); img.crossOrigin = 'anonymous';
-        img.onload = () => res(img); img.onerror = rej;
+        img.onload = () => res(img); img.onerror = () => rej(new Error(`Page ${pg.page_index + 1} image could not be loaded.`));
         img.src = pg.image_url;
       })));
 
-      const compiler = new SavedCompiler();
-      const totalImages = imgs.length;
-      // Fix 4: MindAR reports progress as 0..N (one 0-1 cycle per image), normalize to 0-100
-      await compiler.compileImageTargets(imgs, (prog: number) => {
-        setCompileProgress(Math.min(100, Math.round((prog / totalImages) * 100)));
+      const exportedBuffer = await withMindARWorkers(async () => {
+        const compiler = new Compiler();
+        const total = imgs.length;
+        // MindAR reports progress as 0..N (one 0-1 cycle per image); normalise to 0-100.
+        await compiler.compileImageTargets(imgs, (prog: number) => {
+          setCompileProgress(Math.min(100, Math.round((prog / total) * 100)));
+        });
+        return compiler.exportData();
       });
 
-      const exportedBuffer = await (compiler as unknown as { exportData: () => Promise<ArrayBuffer> }).exportData();
-      const mindBlob = new Blob([exportedBuffer], { type: 'application/octet-stream' });
-      const mindFile = new File([mindBlob], 'targets.mind');
-
-      const path = `${clientId}/${productId}/targets.mind`;
-      await supabase.storage.from('brochure-assets').upload(path, mindFile, { upsert: true });
-      const { data: urlData } = supabase.storage.from('brochure-assets').getPublicUrl(path);
+      const mindFile = new File([new Blob([exportedBuffer], { type: 'application/octet-stream' })], 'targets.mind');
+      const mind_file_url = await uploadFile(`${clientId}/${productId}/targets.mind`, mindFile, 'application/octet-stream');
 
       const br = await ensureBrochure();
-      await supabase.from('brochures').update({ mind_file_url: urlData.publicUrl, compiled_at: new Date().toISOString() }).eq('id', br.id);
-      await load();
-
-      window.Worker = _W;
-      URL.revokeObjectURL(compilerBlob);
-      URL.revokeObjectURL(controllerBlob);
+      const { error } = await supabase.from('brochures')
+        .update({ mind_file_url, compiled_at: new Date().toISOString() }).eq('id', br.id);
+      if (error) throw new Error(error.message);
+      await refreshBrochure(br.id);
     } catch (err) {
       console.error(err);
-      alert('Compilation failed. See console for details.');
+      setNotice(err instanceof Error ? err.message : 'Compilation failed.');
     } finally {
       setCompiling(false);
       setCompileProgress(0);
@@ -391,10 +422,18 @@ export default function ProductBuilderPage() {
   }
 
   async function setStatus(status: 'draft' | 'active' | 'inactive') {
+    if (!editable) return;
     const br = brochure ?? await ensureBrochure();
-    await supabase.from('brochures').update({ status }).eq('id', br.id);
+    if (status === 'active' && !br.mind_file_url) { setNotice('Compile targets before activating the brochure.'); return; }
+    const { error } = await supabase.from('brochures').update({ status }).eq('id', br.id);
+    if (error) { setNotice(error.message); return; }
     setBrochure(b => b ? { ...b, status } : null);
   }
+
+  const needsRecompile = !!brochure && (
+    !brochure.compiled_at ? pages.length > 0 :
+    !!brochure.pages_changed_at && new Date(brochure.pages_changed_at) > new Date(brochure.compiled_at)
+  );
 
   const pageHotspots = selectedPage ? (hotspots[selectedPage.id] ?? []) : [];
 
@@ -426,7 +465,7 @@ export default function ProductBuilderPage() {
           </span>
         )}
 
-        <div className="flex items-center gap-2 flex-wrap">
+        {editable && <div className="flex items-center gap-2 flex-wrap">
           {brochure && (
             <div className="flex gap-1 bg-white border border-slate-200 rounded-xl p-1">
               {(['draft', 'active', 'inactive'] as const).map(s => (
@@ -445,8 +484,29 @@ export default function ProductBuilderPage() {
             <Zap className="w-4 h-4 text-brand-cerise" />
             {compiling ? `Compiling ${compileProgress}%` : 'Compile Targets'}
           </button>
-        </div>
+        </div>}
       </div>
+
+      {notice && (
+        <div className="mb-4 flex items-start gap-2 bg-brand-cerise/5 border border-brand-cerise/20 rounded-xl px-4 py-3 text-sm text-brand-cerise font-medium">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span className="flex-1">{notice}</span>
+          <button onClick={() => setNotice('')} className="text-brand-cerise/60 hover:text-brand-cerise"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+
+      {!editable && (
+        <div className="mb-4 flex items-center gap-2 text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+          <Lock className="w-4 h-4" /> You have view-only access to this client.
+        </div>
+      )}
+
+      {needsRecompile && !compiling && editable && (
+        <div className="mb-4 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          Pages changed since the last compile. Compile targets again before customers scan the brochure.
+        </div>
+      )}
 
       {compiling && (
         <div className="mb-4 bg-brand-navy/5 border border-brand-navy/15 rounded-2xl p-4">
@@ -471,7 +531,7 @@ export default function ProductBuilderPage() {
       <div className="flex gap-4 h-[calc(100vh-300px)] min-h-[500px]">
         {/* Left: page list */}
         <div className="w-52 flex-shrink-0 flex flex-col gap-2 overflow-y-auto pr-1">
-          <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-xl p-3 cursor-pointer transition text-sm font-bold ${uploading ? 'border-brand-cerise/40 text-brand-cerise bg-brand-cerise/5' : 'border-slate-200 text-slate-400 hover:border-brand-olive hover:text-brand-olive hover:bg-brand-cream/30'}`}>
+          {editable && <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-xl p-3 cursor-pointer transition text-sm font-bold ${uploading ? 'border-brand-cerise/40 text-brand-cerise bg-brand-cerise/5' : 'border-slate-200 text-slate-400 hover:border-brand-olive hover:text-brand-olive hover:bg-brand-cream/30'}`}>
             {uploading ? (
               <span className="text-xs">{uploadProgress[uploadProgress.length - 1] ?? 'Uploading...'}</span>
             ) : (
@@ -480,7 +540,7 @@ export default function ProductBuilderPage() {
             <input ref={pageFileInputRef} type="file" accept="image/*,application/pdf" multiple className="hidden"
               onChange={e => handleFileUpload(e.target.files ? Array.from(e.target.files) : [])}
               disabled={uploading} />
-          </label>
+          </label>}
 
           {pages.map(page => (
             <div
@@ -495,12 +555,13 @@ export default function ProductBuilderPage() {
                   <span className="text-white text-xs bg-white/20 rounded-full px-1.5 font-bold">{(hotspots[page.id] ?? []).length}</span>
                 </div>
               </div>
-              <button
+              {editable && <button
                 onClick={e => { e.stopPropagation(); deletePage(page); }}
                 className="absolute top-1 right-1 bg-brand-cerise text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                title="Delete page"
               >
                 <X className="w-3 h-3" />
-              </button>
+              </button>}
             </div>
           ))}
         </div>
@@ -511,14 +572,14 @@ export default function ProductBuilderPage() {
             <>
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-sm font-bold text-brand-navy">Page {selectedPage.page_index + 1}</span>
-                <p className="text-xs text-slate-400 ml-1">Drag hotspots to reposition</p>
-                <button
+                <p className="text-xs text-slate-400 ml-1">{editable ? 'Drag hotspots to reposition' : 'Click a hotspot to view it'}</p>
+                {editable && <button
                   onClick={() => setPlacingMode(!placingMode)}
                   className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl font-bold transition ml-auto ${placingMode ? 'bg-brand-cerise text-white shadow-sm' : 'bg-white border-2 border-slate-200 text-slate-600 hover:border-brand-cerise hover:text-brand-cerise'}`}
                 >
                   <Plus className="w-3.5 h-3.5" />
                   {placingMode ? 'Click to place hotspot' : 'Add Hotspot'}
-                </button>
+                </button>}
               </div>
               <div
                 ref={imageRef}
@@ -713,7 +774,7 @@ export default function ProductBuilderPage() {
                 </label>
               </div>
 
-              <div className="flex gap-2 pt-2">
+              {editable && <div className="flex gap-2 pt-2">
                 <button onClick={saveHotspot} disabled={savingHotspot}
                   className="flex-1 inline-flex items-center justify-center gap-1.5 bg-brand-navy hover:bg-brand-navy/90 text-white text-sm font-black py-2.5 rounded-xl transition shadow-sm">
                   <Save className="w-3.5 h-3.5" /> {savingHotspot ? 'Saving...' : 'Save'}
@@ -722,7 +783,7 @@ export default function ProductBuilderPage() {
                   className="inline-flex items-center justify-center w-10 h-10 bg-brand-cerise/10 hover:bg-brand-cerise/20 text-brand-cerise rounded-xl transition">
                   <Trash2 className="w-4 h-4" />
                 </button>
-              </div>
+              </div>}
             </div>
           </div>
         )}

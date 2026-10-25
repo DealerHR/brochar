@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from '../../lib/router';
 import { supabase, Tenant, Product } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
+import { uploadFile, fileExtension, removeFolder, pathFromPublicUrl, removeFiles } from '../../lib/storage';
+import { slugError, hexColorError, fileTooLarge, MAX_IMAGE_BYTES, toSlug } from '../../lib/validation';
+import TenantTeam from '../../components/TenantTeam';
 import { ArrowLeft, Plus, Package, Pencil, ExternalLink, Upload, X, Check, Trash2 } from 'lucide-react';
 
 export default function ClientDetailPage() {
   const { clientId } = useParams();
   const navigate = useNavigate();
+  const { canEdit, canManage, canView } = useAuth();
+  const editable = canEdit(clientId);
+  const manageable = canManage(clientId);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -15,8 +22,9 @@ export default function ClientDetailPage() {
   const [logoPreview, setLogoPreview] = useState('');
   const [saving, setSaving] = useState(false);
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
-  useEffect(() => { load(); }, [clientId]);
+  useEffect(() => { load(); }, [clientId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
     const [{ data: t }, { data: p }] = await Promise.all([
@@ -33,25 +41,37 @@ export default function ClientDetailPage() {
 
   async function handleSave() {
     if (!tenant) return;
+    setError('');
+    const problem = slugError(form.slug, 'tenant') ?? hexColorError(form.brand_color) ?? (logoFile ? fileTooLarge(logoFile, MAX_IMAGE_BYTES) : null);
+    if (problem) { setError(problem); return; }
     setSaving(true);
-    let logo_url = tenant.logo_url;
-    if (logoFile) {
-      const path = `tenants/${tenant.id}/logo.jpg`;
-      await supabase.storage.from('brochure-assets').upload(path, logoFile, { upsert: true });
-      const { data } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-      logo_url = data.publicUrl;
+    try {
+      let logo_url = tenant.logo_url;
+      if (logoFile) {
+        logo_url = await uploadFile(`tenants/${tenant.id}/logo.${fileExtension(logoFile, 'jpg')}`, logoFile);
+      }
+      const { error: err } = await supabase.from('tenants')
+        .update({ ...form, name: form.name.trim(), description: form.description.trim() || null, logo_url }).eq('id', tenant.id);
+      if (err) throw err.code === '23505' ? new Error('That slug is already used by another client.') : err;
+      await load();
+      setEditing(false);
+      setLogoFile(null);
+      setLogoPreview('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save.');
+    } finally {
+      setSaving(false);
     }
-    await supabase.from('tenants').update({ ...form, logo_url }).eq('id', tenant.id);
-    await load();
-    setSaving(false);
-    setEditing(false);
   }
 
   async function handleDeleteProduct(product: Product) {
-    if (!window.confirm(`Delete "${product.name}"? This will also remove its brochure and all hotspots.`)) return;
+    if (!window.confirm(`Delete "${product.name}"? This removes its brochure, pages, hotspots, uploaded files and analytics.`)) return;
     setDeletingProductId(product.id);
-    // cascade: brochure_pages → hotspots are cascade-deleted via FK; brochures too
-    await supabase.from('products').delete().eq('id', product.id);
+    // Rows cascade through FKs. Storage does not cascade, so clean the product folders.
+    const { error: err } = await supabase.from('products').delete().eq('id', product.id);
+    if (err) { setError(err.message); setDeletingProductId(null); return; }
+    await removeFolder(`${clientId}/${product.id}`);
+    await removeFiles([pathFromPublicUrl(product.thumbnail_url)]);
     setProducts(prev => prev.filter(p => p.id !== product.id));
     setDeletingProductId(null);
   }
@@ -62,10 +82,11 @@ export default function ClientDetailPage() {
       <div className="animate-pulse h-48 bg-white rounded-2xl border border-slate-100" />
     </div>
   );
-  if (!tenant) return <div className="text-slate-500">Client not found.</div>;
+  if (!tenant || !canView(tenant.id)) return <div className="text-slate-500">Client not found.</div>;
 
   return (
     <div>
+      {error && <div className="mb-4 p-3.5 bg-brand-cerise/5 border border-brand-cerise/20 rounded-xl text-brand-cerise text-sm font-medium">{error}</div>}
       <button onClick={() => navigate('/admin/clients')}
         className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
         <ArrowLeft className="w-4 h-4" /> All Clients
@@ -98,7 +119,7 @@ export default function ClientDetailPage() {
                 <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full focus:outline-none focus:border-brand-navy font-bold" />
                 <div className="flex gap-3">
-                  <input value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value }))}
+                  <input value={form.slug} onChange={e => setForm(f => ({ ...f, slug: toSlug(e.target.value) }))}
                     className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm font-mono flex-1 focus:outline-none focus:border-brand-navy" placeholder="slug" />
                   <input type="color" value={form.brand_color} onChange={e => setForm(f => ({ ...f, brand_color: e.target.value }))}
                     className="w-10 h-10 rounded-xl border-2 border-slate-200 cursor-pointer p-0.5" />
@@ -134,10 +155,12 @@ export default function ClientDetailPage() {
                 <p className="text-sm text-slate-400 font-mono">/{tenant.slug}</p>
                 {tenant.description && <p className="text-sm text-slate-500 mt-1">{tenant.description}</p>}
                 <div className="flex items-center gap-4 mt-3">
-                  <button onClick={() => setEditing(true)}
-                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-500 hover:text-brand-navy transition">
-                    <Pencil className="w-3.5 h-3.5" /> Edit
-                  </button>
+                  {manageable && (
+                    <button onClick={() => setEditing(true)}
+                      className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-500 hover:text-brand-navy transition">
+                      <Pencil className="w-3.5 h-3.5" /> Edit
+                    </button>
+                  )}
                   <a href={`/${tenant.slug}`} target="_blank" rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-cerise hover:text-brand-cerise/80 transition">
                     <ExternalLink className="w-3.5 h-3.5" /> View public page
@@ -152,10 +175,12 @@ export default function ClientDetailPage() {
 
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-xl font-black text-brand-navy">Products</h2>
-        <Link to={`/admin/clients/${clientId}/products/new`}
-          className="inline-flex items-center gap-2 bg-brand-cerise hover:bg-brand-cerise/90 text-white text-sm font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-brand-cerise/20">
-          <Plus className="w-4 h-4" /> Add Product
-        </Link>
+        {editable && (
+          <Link to={`/admin/clients/${clientId}/products/new`}
+            className="inline-flex items-center gap-2 bg-brand-cerise hover:bg-brand-cerise/90 text-white text-sm font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-brand-cerise/20">
+            <Plus className="w-4 h-4" /> Add Product
+          </Link>
+        )}
       </div>
 
       {products.length === 0 ? (
@@ -192,7 +217,7 @@ export default function ClientDetailPage() {
                   {product.description && <p className="text-xs text-slate-400 line-clamp-2">{product.description}</p>}
                 </div>
               </Link>
-              <button
+              {editable && <button
                 onClick={e => { e.preventDefault(); handleDeleteProduct(product); }}
                 disabled={deletingProductId === product.id}
                 className="absolute top-2 left-2 w-7 h-7 rounded-full bg-white/90 border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-brand-cerise hover:border-brand-cerise/40 transition opacity-0 group-hover:opacity-100 disabled:opacity-60"
@@ -201,11 +226,15 @@ export default function ClientDetailPage() {
                 {deletingProductId === product.id
                   ? <span className="w-3 h-3 border-2 border-brand-cerise/40 border-t-brand-cerise rounded-full animate-spin" />
                   : <Trash2 className="w-3.5 h-3.5" />}
-              </button>
+              </button>}
             </div>
           ))}
         </div>
       )}
+
+      <div className="mt-8">
+        <TenantTeam tenantId={tenant.id} canManage={manageable} />
+      </div>
     </div>
   );
 }

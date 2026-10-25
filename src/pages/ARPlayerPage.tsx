@@ -1,43 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from '../lib/router';
 import { supabase, Brochure, BrochurePage, Hotspot, Product, Tenant } from '../lib/supabase';
+import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR, MindARThree } from '../lib/mindar';
+import { ArSession } from '../lib/analytics';
+import { youtubeId, isHttpUrl } from '../lib/validation';
 import { Volume2, Play, X, AlertCircle, ChevronLeft } from 'lucide-react';
-
-declare global {
-  interface Window {
-    MINDAR: {
-      IMAGE: {
-        Compiler: new () => unknown;
-        MindARThree: new (opts: unknown) => MindARThree;
-        THREE: typeof THREE;
-      };
-    };
-    Worker: new (url: string, opts?: WorkerOptions) => Worker;
-  }
-}
-
-interface MindARThree {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  start: () => Promise<void>;
-  stop: () => void;
-  addAnchor: (targetIndex: number) => { group: THREE.Group; onTargetFound: () => void; onTargetLost: () => void };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type THREE = any;
-
-const CDN = 'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.1.4/dist/';
-
-function loadScript(src: string): Promise<void> {
-  return new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement('script');
-    s.src = src; s.onload = () => res(); s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
 
 // Cross-browser fullscreen helpers
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,12 +45,14 @@ function readIsLandscape(): boolean {
   return window.innerWidth > window.innerHeight;
 }
 
-function extractYouTubeId(url: string): string {
-  const m = url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/);
-  return m?.[1] ?? url;
-}
-
 type PopupState = { hotspot: Hotspot; showVideo: boolean } | null;
+
+// Only render video controls when the stored reference is something we can safely embed.
+function hasVideo(h: Hotspot): boolean {
+  if (h.video_type === 'youtube') return !!youtubeId(h.video_ref ?? '');
+  if (h.video_type === 'upload') return isHttpUrl(h.video_ref);
+  return false;
+}
 
 export default function ARPlayerPage() {
   const { tenantSlug, productSlug } = useParams();
@@ -108,19 +77,11 @@ export default function ARPlayerPage() {
   const [isLandscape, setIsLandscape] = useState(readIsLandscape);
   // Mutable ref so the animation loop can read/write without capturing stale state
   const isLandscapeRef = useRef(readIsLandscape());
-  // Debug state — refreshed every frame by the AR animation loop (see startAR) so it
-  // always reflects what the code actually sees, even when resize/orientationchange
-  // events fail to fire (common in fullscreen on iOS Safari). Remove once confirmed.
-  const [dbg, setDbg] = useState({ w: window.innerWidth, h: window.innerHeight, evts: 0, type: 'unknown' });
-  const dbgEvtsRef = useRef(0);
-  // Throttle debug-panel updates so we don't re-render React 60x/sec.
-  const dbgTickRef = useRef(0);
+  const sessionRef = useRef<ArSession | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const update = () => {
-      dbgEvtsRef.current += 1;
-      const so = (screen as Screen & { orientation?: { type?: string } }).orientation;
-      setDbg({ w: window.innerWidth, h: window.innerHeight, evts: dbgEvtsRef.current, type: so?.type ?? 'n/a' });
       const next = readIsLandscape();
       if (next !== isLandscapeRef.current) {
         isLandscapeRef.current = next;
@@ -142,7 +103,8 @@ export default function ARPlayerPage() {
     };
   }, []);
 
-  const dotsRef = useRef<Array<{ dot: THREE.Mesh; hotspot: Hotspot }>>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dotsRef = useRef<Array<{ dot: any; hotspot: Hotspot; pageId: string }>>([]);
   const lastTapRef = useRef(0);
   const lastPopupOpenRef = useRef(0);
   const listenersRef = useRef<Array<() => void>>([]);
@@ -166,6 +128,7 @@ export default function ARPlayerPage() {
     loadData();
 
     return () => {
+      stopAudio();
       mindARRef.current?.stop();
       mindARRef.current = null;
       div.remove();
@@ -176,14 +139,17 @@ export default function ARPlayerPage() {
       listenersRef.current = [];
       leaveFullscreen();
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadData() {
     setLoadingMsg('Fetching experience data...');
-    const { data: t } = await supabase.from('tenants').select('*').eq('slug', tenantSlug!).maybeSingle();
+    const { data: t } = await supabase.from('tenants').select('*').eq('slug', tenantSlug!).eq('is_active', true).maybeSingle();
+    if (!t) { setError('Experience not found.'); return; }
     setTenant(t);
-    const { data: p } = await supabase.from('products').select('*').eq('slug', productSlug!).maybeSingle();
-    if (!t || !p) { setError('Experience not found.'); return; }
+    // Scope the product to this tenant: product slugs are only unique per tenant.
+    const { data: p } = await supabase.from('products').select('*')
+      .eq('tenant_id', t.id).eq('slug', productSlug!).eq('is_active', true).maybeSingle();
+    if (!p) { setError('Experience not found.'); return; }
     setProduct(p);
 
     const { data: br } = await supabase.from('brochures').select('*').eq('product_id', p.id).eq('status', 'active').maybeSingle();
@@ -191,14 +157,20 @@ export default function ARPlayerPage() {
     setBrochure(br);
 
     const { data: pg } = await supabase.from('brochure_pages').select('*').eq('brochure_id', br.id).order('page_index');
-    const { data: hs } = await supabase.from('hotspots').select('*')
-      .in('page_id', (pg ?? []).map(x => x.id)).order('display_order');
+    const pageIds = (pg ?? []).map(x => x.id);
+    const { data: hs } = pageIds.length
+      ? await supabase.from('hotspots').select('*').in('page_id', pageIds).order('display_order')
+      : { data: [] as Hotspot[] };
     setPages(pg ?? []);
     setHotspots(hs ?? []);
 
-    await supabase.from('ar_events').insert({ brochure_id: br.id, event_type: 'session_start' });
     setLoading(false);
     setLoadingMsg('');
+  }
+
+  function stopAudio() {
+    window.speechSynthesis?.cancel();
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
   }
 
   async function startAR() {
@@ -210,33 +182,17 @@ export default function ARPlayerPage() {
     await enterFullscreen();
 
     setLoading(true);
-    setLoadingMsg('Loading MindAR engine...');
+    setLoadingMsg('Loading AR engine...');
     setLoadProgress(10);
 
     try {
-      const [cr, ctr] = await Promise.all([
-        fetch(CDN + 'compiler.worker.prod.js'),
-        fetch(CDN + 'controller.worker.prod.js'),
-      ]);
-      const compilerBlob = URL.createObjectURL(new Blob([await cr.text()], { type: 'application/javascript' }));
-      const controllerBlob = URL.createObjectURL(new Blob([await ctr.text()], { type: 'application/javascript' }));
-
-      const _W = window.Worker;
-      window.Worker = function (url: string, opts?: WorkerOptions) {
-        if (typeof url === 'string' && !url.startsWith('blob:')) {
-          if (/compiler[./]worker/.test(url)) url = compilerBlob;
-          if (/controller[./]worker/.test(url)) url = controllerBlob;
-        }
-        return new _W(url, opts);
-      } as unknown as typeof Worker;
-
-      setLoadProgress(30);
-      setLoadingMsg('Loading AR engine...');
       // mindar-image-three.prod.js bundles TF.js + Three.js + MindAR + Compiler — load it ONCE.
-      // Loading mindar-image.prod.js first was causing TF.js to double-initialize, corrupting
-      // the WebGL backend and producing hundreds of "kernel already registered" warnings.
-      await loadScript(CDN + 'mindar-image-three.prod.js');
-      setLoadProgress(75);
+      // Loading mindar-image.prod.js as well makes TF.js double-initialise and corrupts WebGL.
+      await loadScript(MINDAR_CDN + 'mindar-image-three.prod.js');
+      setLoadProgress(60);
+
+      const session = new ArSession(brochure.id);
+      sessionRef.current = session;
 
       setLoadingMsg('Fetching targets...');
       const mindResponse = await fetch(brochure.mind_file_url);
@@ -245,7 +201,10 @@ export default function ARPlayerPage() {
       setLoadProgress(85);
 
       setLoadingMsg('Starting camera...');
-      const THREE = window.MINDAR.IMAGE.THREE;
+      const MINDAR = requireMindAR();
+      const THREE = MINDAR.IMAGE.THREE;
+      const MindARThreeCtor = MINDAR.IMAGE.MindARThree;
+      if (!THREE || !MindARThreeCtor) throw new Error('AR engine did not load.');
 
       const container = arDivRef.current!;
 
@@ -265,7 +224,7 @@ export default function ARPlayerPage() {
       window.addEventListener('resize', onWindowResize);
       listenersRef.current.push(() => window.removeEventListener('resize', onWindowResize));
 
-      const mindar = new window.MINDAR.IMAGE.MindARThree({
+      const mindar = new MindARThreeCtor({
         container,
         imageTargetSrc: mindBlob,
         maxTrack: 1,
@@ -343,19 +302,16 @@ export default function ARPlayerPage() {
           const mesh = new THREE.Mesh(geo, mat);
           mesh.position.set(x, y, 0.001);
           anchor.group.add(mesh);
-          dotsRef.current.push({ dot: mesh, hotspot });
+          dotsRef.current.push({ dot: mesh, hotspot, pageId: page.id });
         }
 
-        anchor.onTargetFound = async () => {
+        anchor.onTargetFound = () => {
           // Cancel any pending "lost" timer so the bar doesn't flicker when
           // tracking briefly drops then recovers.
           if (lostTimer) { clearTimeout(lostTimer); lostTimer = null; }
           setActivePageHotspots(pageHotspots);
-          if (brochure) {
-            await supabase.from('ar_events').insert({
-              brochure_id: brochure.id, page_id: page.id, event_type: 'target_found',
-            });
-          }
+          // Logged once per page per session (see ArSession), so wobble does not inflate it.
+          session.targetFound(page.id);
         };
         anchor.onTargetLost = () => {
           // 500ms grace period before hiding — prevents flicker from momentary
@@ -365,15 +321,14 @@ export default function ARPlayerPage() {
       }
 
       setLoadProgress(95);
-      await mindar.start();
+      // MindAR spins up its tracking worker inside start(); serve it from a blob URL.
+      await withMindARWorkers(() => mindar.start());
       setLoadProgress(100);
 
       setStarted(true);
       setLoading(false);
-
-      window.Worker = _W;
-      URL.revokeObjectURL(compilerBlob);
-      URL.revokeObjectURL(controllerBlob);
+      // The session starts when the camera is actually running, not on page load.
+      session.sessionStart();
 
       // MindAR's DOM structure inside the container after start():
       //   <canvas>  WebGL renderer  — appended in constructor, z-index: auto
@@ -412,18 +367,12 @@ export default function ARPlayerPage() {
       // Also re-checks orientation EVERY frame using the Screen Orientation API (not just
       // viewport dimensions), because resize/orientationchange events often don't fire in
       // fullscreen on iOS Safari, leaving the React overlay stuck in the wrong layout.
-      // The debug panel is throttled to ~4 Hz so it doesn't trigger 60 React re-renders/sec.
       let tick = 0;
       renderer.setAnimationLoop(() => {
         const nextLandscape = readIsLandscape();
         if (nextLandscape !== isLandscapeRef.current) {
           isLandscapeRef.current = nextLandscape;
           setIsLandscape(nextLandscape);
-        }
-        dbgTickRef.current += 1;
-        if (dbgTickRef.current % 16 === 0) {
-          const so = (screen as Screen & { orientation?: { type?: string } }).orientation;
-          setDbg({ w: window.innerWidth, h: window.innerHeight, evts: dbgEvtsRef.current, type: so?.type ?? 'n/a' });
         }
         tick += 0.05;
         for (const { dot } of dotsRef.current) {
@@ -473,7 +422,8 @@ export default function ARPlayerPage() {
       };
       // Fallback click handler for non-touch (desktop testing)
       const clickH = (e: MouseEvent) => {
-        if (e.sourceCapabilities?.firesTouchEvents) return; // already handled by touchend
+        const caps = (e as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } }).sourceCapabilities;
+        if (caps?.firesTouchEvents) return; // already handled by touchend
         onTap(e.clientX, e.clientY);
       };
       window.addEventListener('touchstart', touchStartH, { passive: true });
@@ -491,21 +441,30 @@ export default function ARPlayerPage() {
     }
   }
 
-  async function handleHotspotTap(hotspot: Hotspot) {
+  function handleHotspotTap(hotspot: Hotspot) {
     lastPopupOpenRef.current = Date.now();
+    stopAudio();
     setPopup({ hotspot, showVideo: false });
-    if (brochure) {
-      await supabase.from('ar_events').insert({
-        brochure_id: brochure.id, hotspot_id: hotspot.id, event_type: 'hotspot_tapped',
-      });
-    }
+    sessionRef.current?.hotspotTapped(hotspot.id, hotspot.page_id);
   }
 
-  function speakHotspot(hotspot: Hotspot) {
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(`${hotspot.label}. ${hotspot.description ?? ''}`);
-    utter.lang = 'en-IN';
-    window.speechSynthesis.speak(utter);
+  function playHotspotAudio(hotspot: Hotspot) {
+    stopAudio();
+    if (hotspot.audio_type === 'upload' && isHttpUrl(hotspot.audio_url)) {
+      const a = new Audio(hotspot.audio_url);
+      audioRef.current = a;
+      a.play().catch(() => { /* autoplay blocked or bad file */ });
+    } else if ('speechSynthesis' in window) {
+      const utter = new SpeechSynthesisUtterance(`${hotspot.label}. ${hotspot.description ?? ''}`);
+      utter.lang = 'en-IN';
+      window.speechSynthesis.speak(utter);
+    }
+    sessionRef.current?.mediaPlayed(hotspot.id, hotspot.page_id);
+  }
+
+  function showVideo() {
+    setPopup(p => p ? { ...p, showVideo: true } : p);
+    if (popup) sessionRef.current?.mediaPlayed(popup.hotspot.id, popup.hotspot.page_id);
   }
 
   function closePopup() {
@@ -514,12 +473,12 @@ export default function ARPlayerPage() {
     // popup — making quick taps look like they don't work. Guard against this by ignoring
     // close requests for 600ms after the popup was opened.
     if (Date.now() - lastPopupOpenRef.current < 600) return;
-    window.speechSynthesis.cancel();
+    stopAudio();
     setPopup(null);
   }
 
   async function exitAR() {
-    window.speechSynthesis.cancel();
+    stopAudio();
     mindARRef.current?.stop();
     mindARRef.current = null;
     await leaveFullscreen();
@@ -550,17 +509,6 @@ export default function ARPlayerPage() {
         </button>
       )}
 
-      {/* DEBUG PANEL — shows live orientation data to diagnose rotation detection.
-          Remove this block once the issue is confirmed fixed. */}
-      {started && (
-        <div style={{ position: 'fixed', bottom: '6rem', left: '0.75rem', zIndex: 60 }}
-          className="bg-black/75 text-white rounded-xl px-3 py-2 text-xs font-mono leading-relaxed pointer-events-none select-none">
-          <div>VP: {dbg.w} x {dbg.h}</div>
-          <div>orientation: {dbg.type}</div>
-          <div>isLandscape: {isLandscape ? 'YES' : 'NO'}</div>
-          <div>Events: {dbg.evts}</div>
-        </div>
-      )}
       {/* Loading overlay */}
       {loading && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 20 }}
@@ -644,7 +592,7 @@ export default function ARPlayerPage() {
                 <p className="text-slate-600 text-sm leading-relaxed mb-4">{popup.hotspot.description}</p>
               )}
 
-              {popup.hotspot.image_url && (
+              {isHttpUrl(popup.hotspot.image_url) && (
                 <div className="mb-4 rounded-xl overflow-hidden border border-slate-100">
                   <img src={popup.hotspot.image_url} alt={popup.hotspot.label}
                     className="w-full object-contain max-h-48" />
@@ -654,32 +602,26 @@ export default function ARPlayerPage() {
               <div className="flex gap-2 flex-wrap">
                 {popup.hotspot.audio_type !== 'none' && (
                   <button
-                    onClick={() => {
-                      if (popup.hotspot.audio_type === 'upload' && popup.hotspot.audio_url) {
-                        new Audio(popup.hotspot.audio_url).play();
-                      } else {
-                        speakHotspot(popup.hotspot);
-                      }
-                    }}
+                    onClick={() => playHotspotAudio(popup.hotspot)}
                     className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-full text-white transition active:scale-95"
                     style={{ backgroundColor: brandColor }}>
                     <Volume2 className="w-4 h-4" /> Listen
                   </button>
                 )}
-                {popup.hotspot.video_type !== 'none' && !popup.showVideo && (
+                {hasVideo(popup.hotspot) && !popup.showVideo && (
                   <button
-                    onClick={() => setPopup(p => p ? { ...p, showVideo: true } : p)}
+                    onClick={showVideo}
                     className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-full bg-slate-900 text-white transition active:scale-95">
                     <Play className="w-4 h-4" /> Watch
                   </button>
                 )}
               </div>
 
-              {popup.showVideo && popup.hotspot.video_type !== 'none' && (
+              {popup.showVideo && hasVideo(popup.hotspot) && (
                 <div className="mt-4 rounded-xl overflow-hidden bg-black aspect-video">
                   {popup.hotspot.video_type === 'youtube' ? (
                     <iframe
-                      src={`https://www.youtube.com/embed/${extractYouTubeId(popup.hotspot.video_ref ?? '')}?autoplay=1&rel=0&playsinline=1&enablejsapi=1`}
+                      src={`https://www.youtube-nocookie.com/embed/${youtubeId(popup.hotspot.video_ref ?? '')}?autoplay=1&rel=0&playsinline=1`}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                       allowFullScreen
                       className="w-full h-full border-0"

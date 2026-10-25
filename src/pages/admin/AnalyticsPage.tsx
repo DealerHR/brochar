@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase, Tenant, Product } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import { LineChart } from '../../lib/charts';
-import { Calendar, TrendingUp, Target, MousePointerClick, Cpu } from 'lucide-react';
+import { Calendar, TrendingUp, Target, MousePointerClick, Cpu, PlayCircle } from 'lucide-react';
 
-type DailyStat = { date: string; sessions: number; detections: number; taps: number };
-type ProductRow = { product_id: string; product_name: string; tenant_name: string; sessions: number; detections: number; taps: number };
+type DailyStat = { date: string; sessions: number; detections: number; taps: number; plays: number };
+type ProductRow = { product_id: string; product_name: string; tenant_name: string; sessions: number; detections: number; taps: number; plays: number };
+type EventRow = { event_type: string; date_key: string; product_id: string | null; tenant_id: string | null; session_id: string | null };
 
 function daysAgo(n: number) {
   const d = new Date();
@@ -13,6 +15,7 @@ function daysAgo(n: number) {
 }
 
 export default function AnalyticsPage() {
+  const { isPlatformAdmin, memberships } = useAuth();
   const [dateFrom, setDateFrom] = useState(daysAgo(7));
   const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
   const [tenantFilter, setTenantFilter] = useState('');
@@ -23,73 +26,75 @@ export default function AnalyticsPage() {
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    supabase.from('tenants').select('*').then(({ data }) => setTenants(data ?? []));
-  }, []);
+  const ownTenantIds = memberships.map(m => m.tenant_id);
 
   useEffect(() => {
-    if (tenantFilter) {
-      supabase.from('products').select('*').eq('tenant_id', tenantFilter).then(({ data }) => setProducts(data ?? []));
-    } else {
-      supabase.from('products').select('*').then(({ data }) => setProducts(data ?? []));
-    }
-  }, [tenantFilter]);
+    let q = supabase.from('tenants').select('*').order('name');
+    if (!isPlatformAdmin) q = q.in('id', ownTenantIds);
+    q.then(({ data }) => setTenants(data ?? []));
+  }, [isPlatformAdmin, ownTenantIds.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { loadStats(); }, [dateFrom, dateTo, tenantFilter, productFilter]);
+  useEffect(() => {
+    let q = supabase.from('products').select('*').order('name');
+    if (tenantFilter) q = q.eq('tenant_id', tenantFilter);
+    else if (!isPlatformAdmin) q = q.in('tenant_id', ownTenantIds);
+    q.then(({ data }) => setProducts(data ?? []));
+  }, [tenantFilter, isPlatformAdmin, ownTenantIds.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadStats() {
+  const loadStats = useCallback(async () => {
     setLoading(true);
-    let q = supabase.from('ar_events').select('event_type, date_key, brochure_id').gte('date_key', dateFrom).lte('date_key', dateTo);
-    if (productFilter) {
-      const { data: brs } = await supabase.from('brochures').select('id').eq('product_id', productFilter);
-      const ids = brs?.map(b => b.id) ?? [];
-      if (ids.length === 0) { setDailyStats([]); setProductRows([]); setLoading(false); return; }
-      q = q.in('brochure_id', ids);
-    } else if (tenantFilter) {
-      const { data: prods } = await supabase.from('products').select('id').eq('tenant_id', tenantFilter);
-      const prodIds = prods?.map(p => p.id) ?? [];
-      if (prodIds.length > 0) {
-        const { data: brs } = await supabase.from('brochures').select('id').in('product_id', prodIds);
-        const ids = brs?.map(b => b.id) ?? [];
-        if (ids.length === 0) { setDailyStats([]); setProductRows([]); setLoading(false); return; }
-        q = q.in('brochure_id', ids);
-      }
-    }
-    const { data: events } = await q;
+    // ar_events carries tenant_id and product_id directly (stamped by the database),
+    // so one query answers every filter. RLS limits rows to tenants the user can view.
+    let q = supabase.from('ar_events')
+      .select('event_type, date_key, product_id, tenant_id, session_id')
+      .gte('date_key', dateFrom).lte('date_key', dateTo).limit(50000);
+    if (productFilter) q = q.eq('product_id', productFilter);
+    else if (tenantFilter) q = q.eq('tenant_id', tenantFilter);
+    const { data } = await q;
+    const events = (data ?? []) as EventRow[];
+
+    const bump = (row: DailyStat | ProductRow, type: string) => {
+      if (type === 'session_start') row.sessions++;
+      else if (type === 'target_found') row.detections++;
+      else if (type === 'hotspot_tapped') row.taps++;
+      else if (type === 'media_played') row.plays++;
+    };
+
     const byDate: Record<string, DailyStat> = {};
-    for (const ev of events ?? []) {
-      if (!byDate[ev.date_key]) byDate[ev.date_key] = { date: ev.date_key, sessions: 0, detections: 0, taps: 0 };
-      if (ev.event_type === 'session_start') byDate[ev.date_key].sessions++;
-      if (ev.event_type === 'target_found') byDate[ev.date_key].detections++;
-      if (ev.event_type === 'hotspot_tapped') byDate[ev.date_key].taps++;
+    for (const ev of events) {
+      byDate[ev.date_key] ??= { date: ev.date_key, sessions: 0, detections: 0, taps: 0, plays: 0 };
+      bump(byDate[ev.date_key], ev.event_type);
     }
     setDailyStats(Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)));
-    const brochureIds = [...new Set((events ?? []).map(e => e.brochure_id))];
-    if (brochureIds.length > 0) {
-      const { data: brs } = await supabase.from('brochures').select('id, product_id').in('id', brochureIds);
-      const { data: prods } = await supabase.from('products').select('id, name, tenant_id');
-      const { data: tens } = await supabase.from('tenants').select('id, name');
-      const tenantMap = Object.fromEntries((tens ?? []).map(t => [t.id, t.name]));
-      const prodMap = Object.fromEntries((prods ?? []).map(p => [p.id, p]));
-      const brMap = Object.fromEntries((brs ?? []).map(b => [b.id, b.product_id]));
-      const pRows: Record<string, ProductRow> = {};
-      for (const ev of events ?? []) {
-        const prodId = brMap[ev.brochure_id];
-        const prod = prodMap[prodId];
-        if (!prod) continue;
-        if (!pRows[prodId]) pRows[prodId] = { product_id: prodId, product_name: prod.name, tenant_name: tenantMap[prod.tenant_id] ?? '', sessions: 0, detections: 0, taps: 0 };
-        if (ev.event_type === 'session_start') pRows[prodId].sessions++;
-        if (ev.event_type === 'target_found') pRows[prodId].detections++;
-        if (ev.event_type === 'hotspot_tapped') pRows[prodId].taps++;
-      }
-      setProductRows(Object.values(pRows).sort((a, b) => b.sessions - a.sessions));
-    } else {
-      setProductRows([]);
-    }
-    setLoading(false);
-  }
 
-  const totals = dailyStats.reduce((acc, d) => ({ sessions: acc.sessions + d.sessions, detections: acc.detections + d.detections, taps: acc.taps + d.taps }), { sessions: 0, detections: 0, taps: 0 });
+    const productIds = [...new Set(events.map(e => e.product_id).filter((x): x is string => !!x))];
+    if (productIds.length === 0) { setProductRows([]); setLoading(false); return; }
+    const { data: prods } = await supabase.from('products').select('id, name, tenant_id').in('id', productIds);
+    const tenantIds = [...new Set((prods ?? []).map(p => p.tenant_id))];
+    const { data: tens } = await supabase.from('tenants').select('id, name').in('id', tenantIds);
+    const tenantMap = Object.fromEntries((tens ?? []).map(t => [t.id, t.name]));
+    const prodMap = Object.fromEntries((prods ?? []).map(p => [p.id, p]));
+    const rows: Record<string, ProductRow> = {};
+    for (const ev of events) {
+      if (!ev.product_id) continue;
+      const prod = prodMap[ev.product_id];
+      rows[ev.product_id] ??= {
+        product_id: ev.product_id,
+        product_name: prod?.name ?? 'Deleted product',
+        tenant_name: prod ? (tenantMap[prod.tenant_id] ?? '') : '',
+        sessions: 0, detections: 0, taps: 0, plays: 0,
+      };
+      bump(rows[ev.product_id], ev.event_type);
+    }
+    setProductRows(Object.values(rows).sort((a, b) => b.sessions - a.sessions));
+    setLoading(false);
+  }, [dateFrom, dateTo, tenantFilter, productFilter]);
+
+  useEffect(() => { loadStats(); }, [loadStats]);
+
+  const totals = dailyStats.reduce((acc, d) => ({
+    sessions: acc.sessions + d.sessions, detections: acc.detections + d.detections, taps: acc.taps + d.taps, plays: acc.plays + d.plays,
+  }), { sessions: 0, detections: 0, taps: 0, plays: 0 });
   const avgTapsPerSession = totals.sessions > 0 ? (totals.taps / totals.sessions).toFixed(1) : '0';
   const filterClass = "border-2 border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-navy text-slate-700 bg-white transition";
 
@@ -116,12 +121,13 @@ export default function AnalyticsPage() {
         </select>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4 mb-6">
         {[
           { label: 'Sessions', value: totals.sessions, icon: Cpu, bg: 'bg-brand-navy/10', color: 'text-brand-navy' },
-          { label: 'Target Detections', value: totals.detections, icon: Target, bg: 'bg-brand-olive/10', color: 'text-brand-olive' },
+          { label: 'Pages Found', value: totals.detections, icon: Target, bg: 'bg-brand-olive/10', color: 'text-brand-olive' },
           { label: 'Hotspot Taps', value: totals.taps, icon: MousePointerClick, bg: 'bg-brand-cerise/10', color: 'text-brand-cerise' },
-          { label: 'Avg Taps/Session', value: avgTapsPerSession, icon: TrendingUp, bg: 'bg-brand-sky/10', color: 'text-brand-sky' },
+          { label: 'Media Plays', value: totals.plays, icon: PlayCircle, bg: 'bg-brand-sky/10', color: 'text-brand-sky' },
+          { label: 'Avg Taps/Session', value: avgTapsPerSession, icon: TrendingUp, bg: 'bg-brand-navy/10', color: 'text-brand-navy' },
         ].map(({ label, value, icon: Icon, bg, color }) => (
           <div key={label} className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
             <div className="flex items-center justify-between mb-3">
@@ -145,7 +151,7 @@ export default function AnalyticsPage() {
           <LineChart data={dailyStats} xKey="date" height={200} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}
             lines={[
               { dataKey: 'sessions', stroke: '#0A2463', strokeWidth: 2.5, name: 'Sessions' },
-              { dataKey: 'detections', stroke: '#65743A', strokeWidth: 2.5, name: 'Detections' },
+              { dataKey: 'detections', stroke: '#65743A', strokeWidth: 2.5, name: 'Pages found' },
               { dataKey: 'taps', stroke: '#D8315B', strokeWidth: 2.5, name: 'Taps' },
             ]}
           />
@@ -167,8 +173,9 @@ export default function AnalyticsPage() {
                 <th className="text-left px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Product</th>
                 <th className="text-left px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Client</th>
                 <th className="text-right px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Sessions</th>
-                <th className="text-right px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Detections</th>
+                <th className="text-right px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Pages found</th>
                 <th className="text-right px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Taps</th>
+                <th className="text-right px-5 py-3 text-xs font-black text-brand-navy uppercase tracking-wide">Plays</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -179,6 +186,7 @@ export default function AnalyticsPage() {
                   <td className="px-5 py-3 text-right font-bold text-brand-navy">{row.sessions}</td>
                   <td className="px-5 py-3 text-right font-bold text-brand-olive">{row.detections}</td>
                   <td className="px-5 py-3 text-right font-bold text-brand-cerise">{row.taps}</td>
+                  <td className="px-5 py-3 text-right font-bold text-brand-sky">{row.plays}</td>
                 </tr>
               ))}
             </tbody>

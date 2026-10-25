@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from '../../lib/router';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import { Users, Package, Cpu, MousePointerClick, ArrowRight, Zap } from 'lucide-react';
 
 type Stats = { clients: number; products: number; sessionsToday: number; tapsToday: number };
@@ -8,15 +9,24 @@ type Stats = { clients: number; products: number; sessionsToday: number; tapsTod
 export default function AdminDashboard() {
   const [stats, setStats] = useState<Stats>({ clients: 0, products: 0, sessionsToday: 0, tapsToday: 0 });
   const [loading, setLoading] = useState(true);
+  const { isPlatformAdmin, memberships } = useAuth();
+  const ownTenantIds = memberships.map(m => m.tenant_id);
   const today = new Date().toISOString().split('T')[0];
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
   useEffect(() => {
     async function load() {
+      // Active clients are publicly readable, so client users are scoped to their own workspaces here.
+      let tenantsQ = supabase.from('tenants').select('*', { count: 'exact', head: true });
+      let productsQ = supabase.from('products').select('*', { count: 'exact', head: true });
+      if (!isPlatformAdmin) {
+        tenantsQ = tenantsQ.in('id', ownTenantIds);
+        productsQ = productsQ.in('tenant_id', ownTenantIds);
+      }
       const [{ count: clients }, { count: products }, { count: sessionsToday }, { count: tapsToday }] = await Promise.all([
-        supabase.from('tenants').select('*', { count: 'exact', head: true }),
-        supabase.from('products').select('*', { count: 'exact', head: true }),
+        tenantsQ,
+        productsQ,
         supabase.from('ar_events').select('*', { count: 'exact', head: true }).eq('event_type', 'session_start').eq('date_key', today),
         supabase.from('ar_events').select('*', { count: 'exact', head: true }).eq('event_type', 'hotspot_tapped').eq('date_key', today),
       ]);
@@ -24,7 +34,7 @@ export default function AdminDashboard() {
       setLoading(false);
     }
     load();
-  }, [today]);
+  }, [today, isPlatformAdmin, ownTenantIds.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cards = [
     { label: 'Total Clients', value: stats.clients, icon: Users, light: 'bg-brand-navy/10 text-brand-navy' },

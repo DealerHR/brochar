@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from '../../lib/router';
 import { supabase, Tenant } from '../../lib/supabase';
+import { uploadFile, fileExtension } from '../../lib/storage';
+import { toSlug, slugError, fileTooLarge, MAX_IMAGE_BYTES } from '../../lib/validation';
 import { ArrowLeft, Upload } from 'lucide-react';
 
 export default function NewProductPage() {
@@ -17,22 +19,19 @@ export default function NewProductPage() {
     supabase.from('tenants').select('*').eq('id', clientId!).maybeSingle().then(({ data }) => setTenant(data));
   }, [clientId]);
 
-  function toSlug(str: string) {
-    return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    const problem = slugError(form.slug) ?? (thumbFile ? fileTooLarge(thumbFile, MAX_IMAGE_BYTES) : null);
+    if (problem) { setError(problem); return; }
+    setSaving(true);
     try {
-      const { data: product, error: err } = await supabase.from('products').insert({ ...form, tenant_id: clientId }).select().single();
-      if (err) throw err;
+      const { data: product, error: err } = await supabase.from('products')
+        .insert({ ...form, name: form.name.trim(), description: form.description.trim() || null, tenant_id: clientId }).select().single();
+      if (err) throw err.code === '23505' ? new Error('This client already has a product with that slug.') : err;
       if (thumbFile && product) {
-        const path = `${clientId}/products/${product.id}/thumbnail.jpg`;
-        await supabase.storage.from('brochure-assets').upload(path, thumbFile, { upsert: true });
-        const { data: urlData } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-        await supabase.from('products').update({ thumbnail_url: urlData.publicUrl }).eq('id', product.id);
+        const thumbnail_url = await uploadFile(`${clientId}/products/${product.id}/thumbnail.${fileExtension(thumbFile, 'jpg')}`, thumbFile);
+        await supabase.from('products').update({ thumbnail_url }).eq('id', product.id);
       }
       navigate(`/admin/clients/${clientId}`);
     } catch (err: unknown) {
@@ -46,7 +45,7 @@ export default function NewProductPage() {
 
   return (
     <div className="max-w-2xl">
-      <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
+      <button onClick={() => navigate(`/admin/clients/${clientId}`)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
         <ArrowLeft className="w-4 h-4" /> Back to {tenant?.name ?? 'client'}
       </button>
       <div className="mb-6">
@@ -76,7 +75,7 @@ export default function NewProductPage() {
           </div>
           <div>
             <label className="block text-sm font-bold text-brand-navy mb-1.5">Slug *</label>
-            <input type="text" required value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value }))} className={`${inputClass} font-mono`} placeholder="next-gen-tiago" />
+            <input type="text" required value={form.slug} onChange={e => setForm(f => ({ ...f, slug: toSlug(e.target.value) }))} className={`${inputClass} font-mono`} placeholder="next-gen-tiago" />
             <p className="text-xs text-slate-400 mt-1.5 font-medium">URL: <span className="text-brand-navy font-mono">/{tenant?.slug ?? 'client'}/{form.slug || 'product-slug'}</span></p>
           </div>
           <div>
@@ -99,7 +98,7 @@ export default function NewProductPage() {
           <button type="submit" disabled={saving} className="bg-brand-cerise hover:bg-brand-cerise/90 disabled:opacity-50 text-white font-black px-6 py-3 rounded-xl text-sm transition shadow-lg shadow-brand-cerise/20">
             {saving ? 'Creating...' : 'Create Product'}
           </button>
-          <button type="button" onClick={() => navigate(-1)} className="bg-white border-2 border-slate-200 hover:border-slate-300 text-slate-600 font-bold px-6 py-3 rounded-xl text-sm transition">
+          <button type="button" onClick={() => navigate(`/admin/clients/${clientId}`)} className="bg-white border-2 border-slate-200 hover:border-slate-300 text-slate-600 font-bold px-6 py-3 rounded-xl text-sm transition">
             Cancel
           </button>
         </div>

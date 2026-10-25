@@ -1,32 +1,33 @@
 import { useState } from 'react';
 import { useNavigate } from '../../lib/router';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
+import { uploadFile, fileExtension } from '../../lib/storage';
+import { toSlug, slugError, hexColorError, fileTooLarge, MAX_IMAGE_BYTES } from '../../lib/validation';
 import { ArrowLeft, Upload } from 'lucide-react';
 
 export default function NewClientPage() {
   const navigate = useNavigate();
+  const { isPlatformAdmin } = useAuth();
   const [form, setForm] = useState({ name: '', slug: '', brand_color: '#0A2463', description: '', is_active: true });
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  function toSlug(str: string) {
-    return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    const problem = slugError(form.slug, 'tenant') ?? hexColorError(form.brand_color) ?? (logoFile ? fileTooLarge(logoFile, MAX_IMAGE_BYTES) : null);
+    if (problem) { setError(problem); return; }
+    setSaving(true);
     try {
-      const { data: tenant, error: insertErr } = await supabase.from('tenants').insert({ ...form }).select().single();
-      if (insertErr) throw insertErr;
+      const { data: tenant, error: insertErr } = await supabase.from('tenants')
+        .insert({ ...form, name: form.name.trim(), description: form.description.trim() || null }).select().single();
+      if (insertErr) throw insertErr.code === '23505' ? new Error('A client with that slug already exists.') : insertErr;
       if (logoFile && tenant) {
-        const path = `tenants/${tenant.id}/logo.jpg`;
-        await supabase.storage.from('brochure-assets').upload(path, logoFile, { upsert: true });
-        const { data: urlData } = supabase.storage.from('brochure-assets').getPublicUrl(path);
-        await supabase.from('tenants').update({ logo_url: urlData.publicUrl }).eq('id', tenant.id);
+        const logo_url = await uploadFile(`tenants/${tenant.id}/logo.${fileExtension(logoFile, 'jpg')}`, logoFile);
+        await supabase.from('tenants').update({ logo_url }).eq('id', tenant.id);
       }
       navigate('/admin/clients');
     } catch (err: unknown) {
@@ -36,11 +37,13 @@ export default function NewClientPage() {
     }
   }
 
+  if (!isPlatformAdmin) return <div className="text-slate-500">Only platform admins can add clients.</div>;
+
   const inputClass = "w-full border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-navy text-slate-800 placeholder-slate-400 transition";
 
   return (
     <div className="max-w-2xl">
-      <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
+      <button onClick={() => navigate('/admin/clients')} className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 hover:text-brand-navy mb-6 transition">
         <ArrowLeft className="w-4 h-4" /> Back
       </button>
       <div className="mb-6">
@@ -69,7 +72,7 @@ export default function NewClientPage() {
           </div>
           <div>
             <label className="block text-sm font-bold text-brand-navy mb-1.5">Slug *</label>
-            <input type="text" required value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value }))} className={`${inputClass} font-mono`} placeholder="tata-motors" />
+            <input type="text" required value={form.slug} onChange={e => setForm(f => ({ ...f, slug: toSlug(e.target.value) }))} className={`${inputClass} font-mono`} placeholder="tata-motors" />
             <p className="text-xs text-slate-400 mt-1.5 font-medium">Public URL: <span className="text-brand-navy font-mono">/{form.slug || 'client-slug'}</span></p>
           </div>
           <div>
@@ -95,7 +98,7 @@ export default function NewClientPage() {
           <button type="submit" disabled={saving} className="bg-brand-cerise hover:bg-brand-cerise/90 disabled:opacity-50 text-white font-black px-6 py-3 rounded-xl text-sm transition shadow-lg shadow-brand-cerise/20">
             {saving ? 'Creating...' : 'Create Client'}
           </button>
-          <button type="button" onClick={() => navigate(-1)} className="bg-white border-2 border-slate-200 hover:border-slate-300 text-slate-600 font-bold px-6 py-3 rounded-xl text-sm transition">
+          <button type="button" onClick={() => navigate('/admin/clients')} className="bg-white border-2 border-slate-200 hover:border-slate-300 text-slate-600 font-bold px-6 py-3 rounded-xl text-sm transition">
             Cancel
           </button>
         </div>
