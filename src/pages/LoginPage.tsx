@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import { useNavigate } from '../lib/router';
 import { Eye, EyeOff, Zap, ArrowRight } from 'lucide-react';
 
@@ -9,7 +10,16 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
   const { signIn } = useAuth();
+
+  async function forgotPassword() {
+    setError(''); setResetMsg('');
+    if (!email) { setError('Enter your email address first, then click "Forgot password".'); return; }
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/reset-password` });
+    if (error) setError(error.message);
+    else setResetMsg('If that email has an account, a reset link is on its way. Check your inbox and spam folder.');
+  }
   const navigate = useNavigate();
 
   async function handleSubmit(e: React.FormEvent) {
@@ -83,6 +93,11 @@ export default function LoginPage() {
               {error}
             </div>
           )}
+          {resetMsg && (
+            <div className="mb-5 p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 text-sm font-medium">
+              {resetMsg}
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -127,7 +142,10 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <p className="text-center text-xs text-slate-400 mt-6">
+          <p className="text-center text-xs text-slate-400 mt-6 flex items-center justify-center gap-4">
+            <button type="button" onClick={forgotPassword} className="text-slate-500 hover:text-brand-navy hover:underline font-medium">
+              Forgot password?
+            </button>
             <button onClick={() => navigate('/')} className="text-brand-cerise hover:underline font-medium">
               Back to BrochAR home
             </button>

@@ -13,6 +13,7 @@ import AnalyticsPage from './pages/admin/AnalyticsPage';
 import TeamPage from './pages/admin/TeamPage';
 import ClientLandingPage from './pages/ClientLandingPage';
 import ARPlayerPage from './pages/ARPlayerPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import { ShieldOff } from 'lucide-react';
 
 function NoAccess() {
@@ -50,6 +51,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
 
           {/* Admin */}
           <Route path="/admin" element={<ProtectedRoute><AdminLayout /></ProtectedRoute>}>

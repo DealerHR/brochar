@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from '../lib/router';
 import { useAuth } from '../contexts/AuthContext';
+import ChangePasswordModal from '../components/ChangePasswordModal';
 import {
-  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap, ShieldCheck
+  LayoutDashboard, Users, BarChart2, LogOut, Menu, X, ChevronRight, Zap, ShieldCheck, KeyRound
 } from 'lucide-react';
 
 const navItems = [
@@ -14,6 +15,7 @@ const navItems = [
 
 export default function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const { signOut, user, isPlatformAdmin, memberships } = useAuth();
   const navigate = useNavigate();
 
@@ -24,6 +26,7 @@ export default function AdminLayout() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
+      {changingPassword && <ChangePasswordModal onClose={() => setChangingPassword(false)} />}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
@@ -80,6 +83,13 @@ export default function AdminLayout() {
             </div>
           </div>
           <button
+            onClick={() => setChangingPassword(true)}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-white/40 hover:text-white hover:bg-white/8 transition"
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>Change password</span>
+          </button>
+          <button
             onClick={handleSignOut}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-white/40 hover:text-white hover:bg-white/8 transition"
           >
@@ -100,6 +110,12 @@ export default function AdminLayout() {
             </span>
           </div>
           <div className="ml-auto flex items-center gap-3">
+            {user?.user_metadata?.must_change_password && (
+              <button onClick={() => setChangingPassword(true)}
+                className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition">
+                You are using a temporary password — change it
+              </button>
+            )}
             <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
             <span className="text-xs text-slate-400 font-medium hidden sm:block">Platform Live</span>
           </div>

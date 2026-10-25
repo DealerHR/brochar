@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, TenantMember, TenantRole } from '../lib/supabase';
-import { Users, UserPlus, Trash2 } from 'lucide-react';
+import CreateUserForm from './CreateUserForm';
+import { Users, Trash2 } from 'lucide-react';
 
 const ROLE_HELP: Record<TenantRole, string> = {
   owner: 'Edit content, client details and team',
@@ -10,9 +11,6 @@ const ROLE_HELP: Record<TenantRole, string> = {
 
 export default function TenantTeam({ tenantId, canManage }: { tenantId: string; canManage: boolean }) {
   const [members, setMembers] = useState<TenantMember[]>([]);
-  const [email, setEmail] = useState('');
-  const [role, setRole] = useState<TenantRole>('editor');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => { load(); }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -20,15 +18,6 @@ export default function TenantTeam({ tenantId, canManage }: { tenantId: string; 
   async function load() {
     const { data } = await supabase.rpc('list_tenant_members', { tid: tenantId });
     setMembers((data ?? []) as TenantMember[]);
-  }
-
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true); setError('');
-    const { error } = await supabase.rpc('add_tenant_member', { tid: tenantId, member_email: email, member_role: role });
-    if (error) setError(error.message);
-    else { setEmail(''); await load(); }
-    setBusy(false);
   }
 
   async function changeRole(m: TenantMember, newRole: TenantRole) {
@@ -48,25 +37,14 @@ export default function TenantTeam({ tenantId, canManage }: { tenantId: string; 
         <Users className="w-4 h-4 text-brand-navy" />
         <h2 className="text-base font-black text-brand-navy">Team</h2>
       </div>
-      <p className="text-xs text-slate-400 mb-4">People who can sign in and work on this client. Users must already exist in Supabase Authentication.</p>
+      <p className="text-xs text-slate-400 mb-4">People who can sign in and work on this client.</p>
 
       {error && <div className="mb-3 p-3 bg-brand-cerise/5 border border-brand-cerise/20 rounded-xl text-brand-cerise text-xs font-medium">{error}</div>}
 
       {canManage && (
-        <form onSubmit={add} className="flex flex-wrap gap-2 mb-4">
-          <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="user@client.com"
-            className="flex-1 min-w-[180px] border-2 border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-navy transition" />
-          <select value={role} onChange={e => setRole(e.target.value as TenantRole)}
-            className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-navy transition">
-            <option value="owner">Owner</option>
-            <option value="editor">Editor</option>
-            <option value="viewer">Viewer</option>
-          </select>
-          <button type="submit" disabled={busy}
-            className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy/90 disabled:opacity-50 text-white text-sm font-bold px-4 py-2 rounded-xl transition">
-            <UserPlus className="w-4 h-4" /> Add
-          </button>
-        </form>
+        <div className="mb-5 pb-5 border-b border-slate-100">
+          <CreateUserForm mode="tenant" tenantId={tenantId} onDone={load} />
+        </div>
       )}
 
       {members.length === 0 ? (

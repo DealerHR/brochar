@@ -1,7 +1,7 @@
 // Input rules shared by the admin forms. The database enforces the same rules,
 // so these only exist to give a clear message before the request is sent.
 
-export const RESERVED_TENANT_SLUGS = ['admin', 'login', 'api', 'assets', 'static', 'auth', 'storage'];
+export const RESERVED_TENANT_SLUGS = ['admin', 'login', 'reset-password', 'api', 'assets', 'static', 'auth', 'storage'];
 
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
