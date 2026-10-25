@@ -152,6 +152,7 @@ export default function QuestionsPage() {
                     </div>
                     <p className="text-sm font-bold text-brand-navy">{r.question}</p>
                     {r.answer && r.tier !== 'error' && <p className="text-sm text-slate-600 mt-1">{r.answer}</p>}
+                    {r.tier === 'error' && <p className="text-xs font-mono text-brand-cerise mt-1 break-all">{r.answer || 'No details recorded'}</p>}
                     {r.sources.length > 0 && <p className="text-[11px] text-slate-400 mt-1">From: {r.sources.map(s => s.label).join(', ')}</p>}
                   </div>
                   {editable && (
