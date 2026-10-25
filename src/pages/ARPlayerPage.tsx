@@ -72,7 +72,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const isLandscapeRef = useRef(readIsLandscape());
 
   const [phase, setPhase] = useState<Phase>('loading');
-  const [status, setStatus] = useState('Loading…');
   const [error, setError] = useState('');
   const [data, setData] = useState<Loaded | null>(null);
   const [isPreview, setIsPreview] = useState(false);
@@ -81,6 +80,7 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const [pdfOverlay, setPdfOverlay] = useState<{ url: string; label: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(isFullscreen());
+  const [rotating, setRotating] = useState(false);
   const [, setIsLandscape] = useState(readIsLandscape());
 
   /* mount: AR container, scroll lock, load + auto-start */
@@ -133,7 +133,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadData(): Promise<Loaded | null> {
-    setStatus('Loading…');
     const { data: t } = await supabase.from('tenants').select('*').eq('slug', tenantSlug!).eq('is_active', true).maybeSingle();
     if (!t) { fail('Experience not found.'); return null; }
     const { data: p } = await supabase.from('products').select('*')
@@ -172,7 +171,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
     setPhase('loading');
 
     try {
-      setStatus('Loading AR engine…');
       // mindar-image-three.prod.js bundles TF.js + Three.js + MindAR. Load it once only;
       // loading mindar-image.prod.js as well double-initialises TF.js and corrupts WebGL.
       await loadScript(MINDAR_CDN + 'mindar-image-three.prod.js');
@@ -180,11 +178,9 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       const session = new ArSession(brochure.id, source);
       sessionRef.current = session;
 
-      setStatus('Loading brochure…');
       const mindResponse = await fetch(brochure.mind_file_url!);
       const mindBlob = URL.createObjectURL(new Blob([await mindResponse.arrayBuffer()]));
 
-      setStatus('Starting camera…');
       const MINDAR = requireMindAR();
       const THREE = MINDAR.IMAGE.THREE;
       const MindARThreeCtor = MINDAR.IMAGE.MindARThree;
@@ -264,9 +260,43 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       const vid = container.querySelector('video') as HTMLVideoElement | null;
       if (vid) { vid.style.top = '0'; vid.style.left = '0'; vid.style.width = '100%'; vid.style.height = '100%'; vid.style.objectFit = 'cover'; }
 
-      const onOrientationChange = () => setTimeout(() => { syncContainerSize(); window.dispatchEvent(new Event('resize')); }, 300);
+      // Rotation: MindAR sizes its projection from the camera stream it opened, so after the
+      // phone turns the dots drift off the page. Restart tracking (no new permission prompt)
+      // once the viewport has settled. Also covers landscape and portrait brochures alike.
+      const styleVideo = () => {
+        const v = container.querySelector('video') as HTMLVideoElement | null;
+        if (v) { v.style.top = '0'; v.style.left = '0'; v.style.width = '100%'; v.style.height = '100%'; v.style.objectFit = 'cover'; }
+      };
+      let rotateTimer: ReturnType<typeof setTimeout> | null = null;
+      let restarting = false;
+      const restartTracking = async () => {
+        if (restarting || mindARRef.current !== mindar) return;
+        restarting = true;
+        setRotating(true);
+        try {
+          mindar.stop();
+          syncContainerSize();
+          await new Promise(r => setTimeout(r, 150));
+          await withMindARWorkers(() => mindar.start());
+          styleVideo();
+        } catch (err) {
+          console.warn('restart after rotation failed', err);
+        } finally {
+          restarting = false;
+          setRotating(false);
+        }
+      };
+      const onOrientationChange = () => {
+        if (rotateTimer) clearTimeout(rotateTimer);
+        rotateTimer = setTimeout(restartTracking, 450);
+      };
       window.addEventListener('orientationchange', onOrientationChange);
-      listenersRef.current.push(() => window.removeEventListener('orientationchange', onOrientationChange));
+      const so = (screen as Screen & { orientation?: EventTarget }).orientation;
+      so?.addEventListener?.('change', onOrientationChange);
+      listenersRef.current.push(
+        () => window.removeEventListener('orientationchange', onOrientationChange),
+        () => so?.removeEventListener?.('change', onOrientationChange),
+      );
 
       let tick = 0;
       renderer.setAnimationLoop(() => {
@@ -414,20 +444,17 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
 
   return (
     <>
-      {/* Loading: one branded screen, no buttons. The camera prompt appears on its own. */}
+      {/* Loading: nothing but a spinner until the brochure is known, then the client logo
+          (or the brochure's first page) above it. The camera prompt appears on its own. */}
       {(phase === 'loading' || phase === 'camera-denied') && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} className="bg-slate-950 flex flex-col items-center justify-center px-8 text-center">
-          {tenant?.logo_url
-            ? <img src={tenant.logo_url} alt={tenant.name} className="h-12 object-contain mb-5 opacity-90" />
-            : <div className="w-12 h-12 rounded-2xl mb-5 flex items-center justify-center text-white font-black text-xl" style={{ backgroundColor: brandColor }}>{tenant?.name?.[0] ?? 'B'}</div>}
-          <h1 className="text-white font-bold text-xl mb-1">{data?.product.name ?? 'AR Brochure'}</h1>
-          <p className="text-slate-400 text-sm mb-8">{tenant?.name ?? ''}</p>
+          {tenant?.logo_url ? (
+            <img src={tenant.logo_url} alt="" className="h-14 max-w-[60vw] object-contain mb-8 opacity-95" />
+          ) : data?.pages[0]?.image_url ? (
+            <img src={data.pages[0].image_url} alt="" className="h-40 max-w-[60vw] object-contain rounded-lg shadow-2xl mb-8 opacity-90" />
+          ) : null}
           {phase === 'loading' ? (
-            <>
-              <div className="w-9 h-9 border-[3px] rounded-full animate-spin mb-4" style={{ borderColor: `${brandColor}55`, borderTopColor: brandColor }} />
-              <p className="text-slate-400 text-xs">{status}</p>
-              <p className="text-slate-600 text-xs mt-6 max-w-xs">Allow camera access when your phone asks, then point it at the printed brochure.</p>
-            </>
+            <div className="w-9 h-9 border-[3px] rounded-full animate-spin" style={{ borderColor: `${brandColor}55`, borderTopColor: brandColor }} />
           ) : (
             <>
               <p className="text-slate-300 text-sm max-w-xs mb-5">The camera could not be started. Allow camera access for this site, then try again.</p>
@@ -468,6 +495,12 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
             </button>
           </div>
         </>
+      )}
+
+      {running && rotating && (
+        <div style={{ position: 'fixed', bottom: '2rem', left: 0, right: 0, zIndex: 25 }} className="flex justify-center pointer-events-none">
+          <span className="bg-black/65 backdrop-blur-md text-white text-xs font-semibold px-4 py-2 rounded-full border border-white/10 shadow-lg">Adjusting to rotation…</span>
+        </div>
       )}
 
       {/* Page-found toast */}
