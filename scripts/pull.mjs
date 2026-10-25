@@ -2,14 +2,18 @@
 // Bolt's terminal has no git, so this fetches the repo tree through the
 // GitHub API and writes every file. Run:  npm run pull
 //
-//   npm run pull            write/overwrite files from GitHub main
-//   npm run pull -- --prune also delete files under src/, public/, supabase/,
-//                           scripts/ that no longer exist in the repo
+//   npm run pull               write/overwrite files from GitHub main, then build
+//   npm run pull -- --prune    also delete files under src/, public/, supabase/,
+//                              scripts/ that no longer exist in the repo
+//   npm run pull -- --no-build skip the build step
 //
-// Never touches node_modules, .env, .bolt or dist.
+// Bolt's Publish uploads the dist/ folder but does not rebuild it when files
+// change outside its editor, so this script runs `npm run build` after pulling.
+// Never touches node_modules, .env or .bolt.
 
 import { mkdir, writeFile, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const OWNER = 'DealerHR';
 const REPO = 'brochar';
@@ -18,6 +22,7 @@ const PRUNE_DIRS = ['src', 'public', 'supabase', 'scripts'];
 const SKIP = /^(node_modules|dist|\.bolt|\.git)(\/|$)|^\.env(\.local)?$/;
 
 const prune = process.argv.includes('--prune');
+const noBuild = process.argv.includes('--no-build');
 
 async function getJson(url) {
   const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
@@ -78,10 +83,20 @@ async function main() {
     }
   }
 
-  console.log(`\nDone. ${written} file(s) updated, ${unchanged} unchanged.`);
-  if (written && files.some(f => f.path === 'package.json')) {
-    console.log('If package.json changed, run: npm install');
+  console.log(`\nPulled. ${written} file(s) updated, ${unchanged} unchanged.`);
+
+  const pkgChanged = written && files.some(f => f.path === 'package.json');
+  if (pkgChanged) {
+    console.log('package.json changed - running npm install ...');
+    const r = spawnSync('npm', ['install'], { stdio: 'inherit' });
+    if (r.status !== 0) { console.error('npm install failed; run it manually, then npm run build.'); process.exit(1); }
   }
+
+  if (noBuild) { console.log('Skipped build (--no-build). Run npm run build before you Publish.'); return; }
+  console.log('Building so Publish uses the new code ...');
+  const b = spawnSync('npm', ['run', 'build'], { stdio: 'inherit' });
+  if (b.status !== 0) { console.error('Build failed. Fix the error above before publishing.'); process.exit(1); }
+  console.log('\nReady. The preview is up to date and Publish will deploy this build.');
 }
 
 main().catch(err => { console.error('Pull failed:', err.message); process.exit(1); });
