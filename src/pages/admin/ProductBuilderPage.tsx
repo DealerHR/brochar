@@ -9,7 +9,7 @@ import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../..
 import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
 import {
   ArrowLeft, FileImage, Trash2, Plus, X, Save,
-  Zap, CheckCircle2, FilePlus, AlertTriangle, Lock, QrCode, GraduationCap
+  Zap, CheckCircle2, FilePlus, AlertTriangle, Lock, QrCode, UserCheck
 } from 'lucide-react';
 
 type HotspotForm = {
@@ -306,7 +306,7 @@ export default function ProductBuilderPage() {
     const removed = before.filter(b => !keepIds.has(b.id)).map(b => b.id);
     if (removed.length) await supabase.from('hotspot_blocks').delete().in('id', removed);
     if (editBlocks.length) {
-      const rows = editBlocks.map((b, i) => ({ id: b.id, hotspot_id: selectedHotspot.id, kind: b.kind, position: i, data: b.data }));
+      const rows = editBlocks.map((b, i) => ({ id: b.id, hotspot_id: selectedHotspot.id, kind: b.kind, position: i, audience: b.audience ?? 'all', data: b.data }));
       const { error: bErr } = await supabase.from('hotspot_blocks').upsert(rows, { onConflict: 'id' });
       if (bErr) { setNotice(`Saved hotspot, but blocks failed: ${bErr.message}`); setSavingHotspot(false); return; }
     }
@@ -470,10 +470,10 @@ export default function ProductBuilderPage() {
               className="inline-flex items-center gap-1.5 bg-white border-2 border-slate-200 hover:border-brand-navy text-slate-600 hover:text-brand-navy text-xs font-bold px-3 py-2 rounded-xl transition">
               <QrCode className="w-3.5 h-3.5" /> QR & links
             </button>
-            <a href={`/${tenant.slug}/${product.slug}/learn`} target="_blank" rel="noopener noreferrer"
+            <a href={`/${tenant.slug}/${product.slug}/team`} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 bg-amber-50 border-2 border-amber-200 hover:border-amber-400 text-amber-800 text-xs font-bold px-3 py-2 rounded-xl transition"
-              title="Open learn mode (pitch, objections, quick checks)">
-              <GraduationCap className="w-3.5 h-3.5" /> Learn mode
+              title="Open the sales team view (all blocks, including sales-team-only ones)">
+              <UserCheck className="w-3.5 h-3.5" /> Sales team view
             </a>
           </>
         )}

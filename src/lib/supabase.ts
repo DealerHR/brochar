@@ -101,17 +101,20 @@ export type PitchData = { pitch: string; objection: string; response: string };
 
 export type BlockData = TextData | ImageData | AudioData | VideoData | LinkData | GalleryData | SpecTableData | PdfData | ActionData | QuizData | PitchData;
 
+export type BlockAudience = 'all' | 'team';
+
 export type HotspotBlock = {
   id: string;
   hotspot_id: string;
   kind: BlockKind;
   position: number;
+  audience: BlockAudience;
   data: BlockData;
   created_at?: string;
 };
 
-/** Blocks only shown in learn mode. */
-export const LEARN_ONLY_KINDS: BlockKind[] = ['quiz', 'pitch'];
+/** Block kinds that start as sales-team-only when added. */
+export const TEAM_DEFAULT_KINDS: BlockKind[] = ['quiz', 'pitch'];
 
 export function emptyBlockData(kind: BlockKind): BlockData {
   switch (kind) {

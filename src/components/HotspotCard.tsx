@@ -5,12 +5,15 @@ import { X } from 'lucide-react';
 
 type Props = {
   hotspot: Hotspot;
+  /** The number printed on the dot (1-based, per page). */
+  number: number;
   blocks: HotspotBlock[];
   tenant: Tenant;
   brandColor: string;
   learnMode: boolean;
   onClose: () => void;
   onLinkOpen: (url: string, label: string, mode: 'overlay' | 'newtab') => void;
+  onPdfOpen: (url: string, label: string) => void;
   onLead: LeadSubmit;
   onMedia: () => void;
 };
@@ -20,7 +23,7 @@ type Props = {
  * grows with its content up to most of the screen, scrolls inside after that.
  * The first audio or video block is allowed to autoplay.
  */
-export default function HotspotCard({ hotspot, blocks, tenant, brandColor, learnMode, onClose, onLinkOpen, onLead, onMedia }: Props) {
+export default function HotspotCard({ hotspot, number, blocks, tenant, brandColor, learnMode, onClose, onLinkOpen, onPdfOpen, onLead, onMedia }: Props) {
   const firstMediaId = blocks.find(b => b.kind === 'audio' || b.kind === 'video')?.id;
   const fallbackSpeech = `${hotspot.label}. ${blocks.filter(b => b.kind === 'text').map(b => (b.data as { text: string }).text).join(' ')}`;
 
@@ -42,7 +45,7 @@ export default function HotspotCard({ hotspot, blocks, tenant, brandColor, learn
         <div className="h-1.5 flex-shrink-0" style={{ backgroundColor: brandColor }} />
         <div className="flex items-start gap-3 px-5 pt-4 pb-2 flex-shrink-0">
           <span className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0 mt-0.5" style={{ backgroundColor: hotspot.dot_color }}>
-            {hotspot.display_order + 1}
+            {number}
           </span>
           <h2 className="text-lg font-bold text-slate-900 leading-snug flex-1">{hotspot.label}</h2>
           <button onClick={onClose} aria-label="Close"
@@ -55,7 +58,7 @@ export default function HotspotCard({ hotspot, blocks, tenant, brandColor, learn
           {blocks.map(b => (
             <BlockView key={b.id} block={b} tenant={tenant} brandColor={brandColor} learnMode={learnMode}
               fallbackSpeech={fallbackSpeech} autoplay={b.id === firstMediaId}
-              onLinkOpen={onLinkOpen} onLead={onLead} onMedia={onMedia} />
+              onLinkOpen={onLinkOpen} onPdfOpen={onPdfOpen} onLead={onLead} onMedia={onMedia} />
           ))}
         </div>
       </div>

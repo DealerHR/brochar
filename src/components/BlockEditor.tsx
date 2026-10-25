@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  HotspotBlock, BlockKind, BlockData, emptyBlockData,
+  HotspotBlock, BlockKind, BlockData, emptyBlockData, TEAM_DEFAULT_KINDS,
   TextData, ImageData, AudioData, VideoData,
   LinkData, GalleryData, SpecTableData, PdfData, ActionData, QuizData, PitchData,
 } from '../lib/supabase';
@@ -8,11 +8,11 @@ import { uploadFile, fileExtension } from '../lib/storage';
 import { fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES, MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, youtubeId } from '../lib/validation';
 import {
   Link2, Images, Table2, FileText, MessageCircle, HelpCircle, Lightbulb,
-  ChevronUp, ChevronDown, Trash2, Plus, X, Upload, GraduationCap,
+  ChevronUp, ChevronDown, Trash2, Plus, X, Upload, Users, UserCheck,
   AlignLeft, ImageIcon, Volume2, Video,
 } from 'lucide-react';
 
-const KINDS: { kind: BlockKind; label: string; icon: typeof Link2; help: string; group: 'basic' | 'more' | 'learn'; learnOnly?: boolean }[] = [
+const KINDS: { kind: BlockKind; label: string; icon: typeof Link2; help: string; group: 'basic' | 'more' | 'learn' }[] = [
   { kind: 'text', label: 'Text', icon: AlignLeft, help: 'A short description the customer reads.', group: 'basic' },
   { kind: 'image', label: 'Image', icon: ImageIcon, help: 'One picture with an optional caption.', group: 'basic' },
   { kind: 'audio', label: 'Audio', icon: Volume2, help: 'Read aloud by the phone, or an uploaded recording. Plays when the card opens.', group: 'basic' },
@@ -22,14 +22,14 @@ const KINDS: { kind: BlockKind; label: string; icon: typeof Link2; help: string;
   { kind: 'spec_table', label: 'Spec table', icon: Table2, help: 'Rows of label and value, for specs or comparisons.', group: 'more' },
   { kind: 'pdf', label: 'PDF document', icon: FileText, help: 'A spec sheet or price list.', group: 'more' },
   { kind: 'action', label: 'Contact button', icon: MessageCircle, help: 'Call, WhatsApp or an enquiry form.', group: 'more' },
-  { kind: 'pitch', label: 'Sales pitch', icon: Lightbulb, help: 'Pitch line, likely objection and how to answer it.', group: 'learn', learnOnly: true },
-  { kind: 'quiz', label: 'Quiz question', icon: HelpCircle, help: 'One multiple-choice question with instant feedback.', group: 'learn', learnOnly: true },
+  { kind: 'pitch', label: 'Sales pitch', icon: Lightbulb, help: 'Pitch line, likely objection and how to answer it.', group: 'learn' },
+  { kind: 'quiz', label: 'Quiz question', icon: HelpCircle, help: 'One multiple-choice question with instant feedback.', group: 'learn' },
 ];
 
 const GROUPS: { id: 'basic' | 'more' | 'learn'; title: string }[] = [
   { id: 'basic', title: 'Content' },
   { id: 'more', title: 'More' },
-  { id: 'learn', title: 'Learn mode only — never shown to customers' },
+  { id: 'learn', title: 'For the sales team (starts as team-only)' },
 ];
 
 function newId(): string {
@@ -49,11 +49,18 @@ export default function BlockEditor({ hotspotId, blocks, onChange, storageBase, 
   const [picking, setPicking] = useState(false);
 
   function add(kind: BlockKind) {
-    onChange([...blocks, { id: newId(), hotspot_id: hotspotId, kind, position: blocks.length, data: emptyBlockData(kind) }]);
+    onChange([...blocks, {
+      id: newId(), hotspot_id: hotspotId, kind, position: blocks.length,
+      audience: TEAM_DEFAULT_KINDS.includes(kind) ? 'team' : 'all',
+      data: emptyBlockData(kind),
+    }]);
     setPicking(false);
   }
   function update(id: string, data: BlockData) {
     onChange(blocks.map(b => b.id === id ? { ...b, data } : b));
+  }
+  function toggleAudience(id: string) {
+    onChange(blocks.map(b => b.id === id ? { ...b, audience: b.audience === 'team' ? 'all' : 'team' } : b));
   }
   function remove(id: string) {
     onChange(blocks.filter(b => b.id !== id).map((b, i) => ({ ...b, position: i })));
@@ -70,7 +77,7 @@ export default function BlockEditor({ hotspotId, blocks, onChange, storageBase, 
   return (
     <div>
       <label className="block text-xs font-bold text-brand-navy mb-1.5">Content</label>
-      <p className="text-xs text-slate-400 mb-2">Shown on the card in this order. Audio and video marked "play on open" start as soon as the card opens.</p>
+      <p className="text-xs text-slate-400 mb-2">Shown on the card in this order. Use the audience switch on a block to show it to the sales team only (the Sales team QR).</p>
 
       <div className="space-y-2">
         {blocks.map((b, i) => {
@@ -81,11 +88,11 @@ export default function BlockEditor({ hotspotId, blocks, onChange, storageBase, 
               <div className="flex items-center gap-2 mb-2">
                 <Icon className="w-3.5 h-3.5 text-brand-navy" />
                 <span className="text-xs font-black text-brand-navy flex-1">{meta.label}</span>
-                {meta.learnOnly && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                    <GraduationCap className="w-3 h-3" /> Learn mode
-                  </span>
-                )}
+                <button onClick={() => toggleAudience(b.id)} title={b.audience === 'team' ? 'Shown to the sales team only. Click to show customers too.' : 'Shown to customers and sales team. Click to make it sales-team only.'}
+                  className={`inline-flex items-center gap-1 text-[10px] font-bold rounded-full px-1.5 py-0.5 border transition ${
+                    b.audience === 'team' ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-500 bg-white border-slate-200 hover:border-slate-300'}`}>
+                  {b.audience === 'team' ? <><UserCheck className="w-3 h-3" /> Sales team only</> : <><Users className="w-3 h-3" /> Everyone</>}
+                </button>
                 <button onClick={() => move(b.id, -1)} disabled={i === 0} className="text-slate-300 hover:text-brand-navy disabled:opacity-30"><ChevronUp className="w-4 h-4" /></button>
                 <button onClick={() => move(b.id, 1)} disabled={i === blocks.length - 1} className="text-slate-300 hover:text-brand-navy disabled:opacity-30"><ChevronDown className="w-4 h-4" /></button>
                 <button onClick={() => remove(b.id)} className="text-slate-300 hover:text-brand-cerise"><Trash2 className="w-4 h-4" /></button>

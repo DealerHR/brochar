@@ -70,7 +70,8 @@ export default function App() {
           {/* Public client pages */}
           <Route path="/:tenantSlug" element={<ClientLandingPage />} />
           <Route path="/:tenantSlug/:productSlug" element={<ARPlayerPage />} />
-          <Route path="/:tenantSlug/:productSlug/learn" element={<ARPlayerPage learnMode />} />
+          <Route path="/:tenantSlug/:productSlug/team" element={<ARPlayerPage teamMode />} />
+          <Route path="/:tenantSlug/:productSlug/learn" element={<ARPlayerPage teamMode />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

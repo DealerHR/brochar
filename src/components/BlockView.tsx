@@ -21,12 +21,13 @@ type Props = {
   /** True for the first audio/video block, so it may autoplay when the card opens. */
   autoplay: boolean;
   onLinkOpen: (url: string, label: string, mode: 'overlay' | 'newtab') => void;
+  onPdfOpen: (url: string, label: string) => void;
   onLead: LeadSubmit;
   onMedia?: () => void;
 };
 
-/** Renders one hotspot content block inside the AR card. */
-export default function BlockView({ block, tenant, brandColor, learnMode, fallbackSpeech, autoplay, onLinkOpen, onLead, onMedia }: Props) {
+/** Renders one hotspot content block inside the AR card. Audience filtering happens at load time. */
+export default function BlockView({ block, tenant, brandColor, fallbackSpeech, autoplay, onLinkOpen, onPdfOpen, onLead, onMedia }: Props) {
   switch (block.kind) {
     case 'text': {
       const d = block.data as TextData;
@@ -110,12 +111,11 @@ export default function BlockView({ block, tenant, brandColor, learnMode, fallba
       const d = block.data as PdfData;
       if (!isHttpUrl(d.url)) return null;
       return (
-        <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={() => onMedia?.()}
-          className="w-full flex items-center gap-2 text-sm font-semibold px-4 py-3 rounded-xl border-2 border-slate-100 hover:border-slate-200 text-slate-800 transition">
+        <button onClick={() => { onPdfOpen(d.url, d.label || 'Document'); onMedia?.(); }}
+          className="w-full flex items-center gap-2 text-left text-sm font-semibold px-4 py-3 rounded-xl border-2 border-slate-100 hover:border-slate-200 text-slate-800 transition active:scale-[0.99]">
           <FileText className="w-4 h-4 flex-shrink-0" style={{ color: brandColor }} />
           <span className="flex-1 truncate">{d.label || 'View document'}</span>
-          <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-        </a>
+        </button>
       );
     }
     case 'action': {
@@ -123,11 +123,9 @@ export default function BlockView({ block, tenant, brandColor, learnMode, fallba
       return <ActionBlock d={d} tenant={tenant} brandColor={brandColor} hotspotId={block.hotspot_id} onLead={onLead} onMedia={onMedia} />;
     }
     case 'quiz': {
-      if (!learnMode) return null;
       return <QuizBlock d={block.data as QuizData} brandColor={brandColor} />;
     }
     case 'pitch': {
-      if (!learnMode) return null;
       const d = block.data as PitchData;
       if (!d.pitch && !d.objection && !d.response) return null;
       return (
