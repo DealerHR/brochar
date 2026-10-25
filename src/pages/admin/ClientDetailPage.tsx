@@ -18,7 +18,10 @@ export default function ClientDetailPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: '', slug: '', brand_color: '#C41E3A', description: '', is_active: true, whatsapp_number: '', phone_number: '', enquiry_email: '' });
+  const [form, setForm] = useState({
+    name: '', slug: '', brand_color: '#C41E3A', description: '', is_active: true, whatsapp_number: '', phone_number: '', enquiry_email: '',
+    assistant_scope: 'brochure_plus' as Tenant['assistant_scope'], assistant_language: 'auto', assistant_monthly_cap: 2000,
+  });
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState('');
   const [saving, setSaving] = useState(false);
@@ -38,6 +41,7 @@ export default function ClientDetailPage() {
       setForm({
         name: t.name, slug: t.slug, brand_color: t.brand_color, description: t.description ?? '', is_active: t.is_active,
         whatsapp_number: t.whatsapp_number ?? '', phone_number: t.phone_number ?? '', enquiry_email: t.enquiry_email ?? '',
+        assistant_scope: t.assistant_scope ?? 'brochure_plus', assistant_language: t.assistant_language ?? 'auto', assistant_monthly_cap: t.assistant_monthly_cap ?? 2000,
       });
     }
     setProducts(p ?? []);
@@ -155,6 +159,43 @@ export default function ClientDetailPage() {
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-400">Used by Contact buttons on hotspots unless a button sets its own number.</p>
+                <div className="pt-2 border-t border-slate-100">
+                  <p className="text-xs font-bold text-brand-navy mb-2">Ask AI</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Who can ask, and from what</label>
+                      <select value={form.assistant_scope} onChange={e => setForm(f => ({ ...f, assistant_scope: e.target.value as Tenant['assistant_scope'] }))}
+                        className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full bg-white focus:outline-none focus:border-brand-navy">
+                        <option value="brochure_plus">Everyone · brochure facts + general explanations</option>
+                        <option value="brochure">Everyone · brochure facts only</option>
+                        <option value="team">Sales team link only</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Language</label>
+                      <select value={form.assistant_language} onChange={e => setForm(f => ({ ...f, assistant_language: e.target.value }))}
+                        className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full bg-white focus:outline-none focus:border-brand-navy">
+                        <option value="auto">Match the question (phone's language for the mic)</option>
+                        <option value="en-IN">English</option>
+                        <option value="hi-IN">Hindi</option>
+                        <option value="mr-IN">Marathi</option>
+                        <option value="gu-IN">Gujarati</option>
+                        <option value="ta-IN">Tamil</option>
+                        <option value="te-IN">Telugu</option>
+                        <option value="kn-IN">Kannada</option>
+                        <option value="bn-IN">Bengali</option>
+                        <option value="ml-IN">Malayalam</option>
+                        <option value="pa-IN">Punjabi</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Questions per month</label>
+                      <input type="number" min={0} value={form.assistant_monthly_cap} onChange={e => setForm(f => ({ ...f, assistant_monthly_cap: Math.max(0, parseInt(e.target.value) || 0) }))}
+                        className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm w-full focus:outline-none focus:border-brand-navy" />
+                    </div>
+                  </div>
+                </div>
                 <div className="flex items-center gap-3">
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} className="sr-only peer" />
@@ -194,6 +235,11 @@ export default function ClientDetailPage() {
                   ) : manageable ? (
                     <button onClick={() => setEditing(true)} className="text-brand-cerise font-bold hover:underline">not set — add WhatsApp and phone</button>
                   ) : 'not set'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  <span className="font-bold text-slate-500">Ask AI: </span>
+                  {{ off: 'off', team: 'sales team link only', brochure: 'everyone, brochure facts only', brochure_plus: 'everyone, brochure facts and explanations' }[tenant.assistant_scope ?? 'brochure_plus']}
+                  {' · '}{tenant.assistant_monthly_cap ?? 2000} questions/month
                 </p>
                 <div className="flex items-center gap-4 mt-3">
                   {manageable && (

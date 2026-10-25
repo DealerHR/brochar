@@ -3,6 +3,7 @@ import { useNavigate, useParams } from '../../lib/router';
 import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, ActionData } from '../../lib/supabase';
 import BlockEditor from '../../components/BlockEditor';
 import QrModal from '../../components/QrModal';
+import KnowledgePanel from '../../components/KnowledgePanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR } from '../../lib/mindar';
 import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../../lib/storage';
@@ -682,6 +683,10 @@ export default function ProductBuilderPage() {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="mt-6">
+        <KnowledgePanel productId={productId} storageBase={`${clientId}/${productId}`} editable={editable} onError={setNotice} />
       </div>
     </div>
   );

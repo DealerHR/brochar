@@ -9,7 +9,8 @@ import { isHttpUrl } from '../lib/validation';
 import HotspotCard from '../components/HotspotCard';
 import LinkOverlay from '../components/LinkOverlay';
 import PdfOverlay from '../components/PdfOverlay';
-import { AlertCircle, ChevronLeft, UserCheck, Eye, Camera } from 'lucide-react';
+import AskCard from '../components/AskCard';
+import { AlertCircle, ChevronLeft, UserCheck, Eye, Camera, Mic } from 'lucide-react';
 
 /* ---------- small helpers ---------- */
 
@@ -68,6 +69,7 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const [linkOverlay, setLinkOverlay] = useState<{ url: string; label: string } | null>(null);
   const [pdfOverlay, setPdfOverlay] = useState<{ url: string; label: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [, setIsLandscape] = useState(readIsLandscape());
 
@@ -415,6 +417,7 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const tenant = data?.tenant ?? null;
   const brandColor = tenant?.brand_color ?? '#0A2463';
   const running = phase === 'running';
+  const askEnabled = !!tenant && tenant.assistant_scope !== 'off' && (tenant.assistant_scope !== 'team' || teamMode);
 
   if (phase === 'error') return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} className="bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
@@ -476,14 +479,33 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       )}
 
       {running && rotating && (
-        <div style={{ position: 'fixed', bottom: '2rem', left: 0, right: 0, zIndex: 25 }} className="flex justify-center pointer-events-none">
+        <div style={{ position: 'fixed', bottom: '5.5rem', left: 0, right: 0, zIndex: 25 }} className="flex justify-center pointer-events-none">
           <span className="bg-black/65 backdrop-blur-md text-white text-xs font-semibold px-4 py-2 rounded-full border border-white/10 shadow-lg">Adjusting to rotation…</span>
         </div>
       )}
 
+      {/* Ask AI */}
+      {running && askEnabled && !popup && !asking && !linkOverlay && !pdfOverlay && (
+        <div style={{ position: 'fixed', bottom: '1.5rem', left: 0, right: 0, zIndex: 26 }} className="flex justify-center pointer-events-none">
+          <button onClick={() => setAsking(true)}
+            className="pointer-events-auto inline-flex items-center gap-2 pl-4 pr-5 py-3 rounded-full text-white text-sm font-bold shadow-2xl border border-white/20 active:scale-95 transition"
+            style={{ backgroundColor: brandColor }}>
+            <Mic className="w-5 h-5" /> Ask
+          </button>
+        </div>
+      )}
+      {asking && tenant && (
+        <AskCard tenant={tenant} productSlug={productSlug!} team={teamMode} sessionId={sessionRef.current?.sessionId} source={source} brandColor={brandColor}
+          onClose={() => setAsking(false)}
+          onSourceTap={hotspotId => {
+            const h = loadedRef.current?.hotspots.find(x => x.id === hotspotId);
+            if (h) { setAsking(false); lastPopupOpenRef.current = Date.now(); setPopup(h); }
+          }} />
+      )}
+
       {/* Page-found toast */}
       {running && toast && !popup && (
-        <div style={{ position: 'fixed', bottom: '2rem', left: 0, right: 0, zIndex: 25 }} className="flex justify-center pointer-events-none">
+        <div style={{ position: 'fixed', bottom: '5.5rem', left: 0, right: 0, zIndex: 25 }} className="flex justify-center pointer-events-none">
           <span className="bg-black/65 backdrop-blur-md text-white text-xs font-semibold px-4 py-2 rounded-full border border-white/10 shadow-lg animate-card-in">{toast}</span>
         </div>
       )}

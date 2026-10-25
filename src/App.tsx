@@ -12,6 +12,7 @@ import ProductBuilderPage from './pages/admin/ProductBuilderPage';
 import AnalyticsPage from './pages/admin/AnalyticsPage';
 import TeamPage from './pages/admin/TeamPage';
 import LeadsPage from './pages/admin/LeadsPage';
+import QuestionsPage from './pages/admin/QuestionsPage';
 import ClientLandingPage from './pages/ClientLandingPage';
 import ARPlayerPage from './pages/ARPlayerPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="clients/:clientId/products/:productId" element={<ProductBuilderPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="leads" element={<LeadsPage />} />
+            <Route path="questions" element={<QuestionsPage />} />
             <Route path="team" element={<TeamPage />} />
           </Route>
 

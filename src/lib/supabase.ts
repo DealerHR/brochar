@@ -24,6 +24,42 @@ export type Tenant = {
   whatsapp_number: string | null;
   phone_number: string | null;
   enquiry_email: string | null;
+  assistant_scope: 'off' | 'team' | 'brochure' | 'brochure_plus';
+  assistant_language: string;
+  assistant_monthly_cap: number;
+  created_at: string;
+};
+
+export type KnowledgeItem = {
+  id: string;
+  product_id: string;
+  kind: 'faq' | 'note' | 'document';
+  title: string;
+  question: string | null;
+  content: string;
+  audience: 'all' | 'team';
+  source_url: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AssistantQuestion = {
+  id: string;
+  tenant_id: string;
+  product_id: string | null;
+  brochure_id: string | null;
+  session_id: string | null;
+  source: string | null;
+  team: boolean;
+  language: string | null;
+  question: string;
+  answer: string | null;
+  tier: 'fact' | 'explain' | 'handoff' | 'blocked' | 'error';
+  sources: { kind: string; id: string; label: string }[];
+  latency_ms: number | null;
+  flagged: boolean;
+  resolved: boolean;
   created_at: string;
 };
 
