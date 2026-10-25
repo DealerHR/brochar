@@ -30,6 +30,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [memberships, setMemberships] = useState<Membership[]>([]);
+  // False while roles are being fetched after a sign-in, so the admin area shows
+  // a spinner instead of a false "no access" screen.
+  const [rolesReady, setRolesReady] = useState(true);
 
   const loadRoles = useCallback(async (uid: string | undefined) => {
     if (!uid) { setIsPlatformAdmin(false); setMemberships([]); return; }
@@ -51,10 +54,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (active) setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
-      await loadRoles(session?.user?.id);
+      const uid = session?.user?.id;
+      if (uid) setRolesReady(false);
+      // Supabase holds its auth lock while this callback runs. Any Supabase query
+      // made here waits for that lock and deadlocks sign-in, so defer the role
+      // lookup to the next tick.
+      setTimeout(() => {
+        if (!active) return;
+        loadRoles(uid).finally(() => { if (active) setRolesReady(true); });
+      }, 0);
     });
 
     return () => { active = false; subscription.unsubscribe(); };
@@ -81,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      session, user, loading, isPlatformAdmin, memberships,
+      session, user, loading: loading || !rolesReady, isPlatformAdmin, memberships,
       hasAdminAccess: isPlatformAdmin || memberships.length > 0,
       roleFor, canView, canEdit, canManage,
       refreshRoles: () => loadRoles(user?.id),
