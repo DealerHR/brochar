@@ -14,7 +14,7 @@ export type RecogniseResult = {
 };
 
 /** Grabs the current camera frame as a JPEG (longest side ≤ maxSide), base64 without the data: prefix. */
-export function captureFrame(video: HTMLVideoElement, maxSide = 1024, quality = 0.82): string | null {
+export function captureFrame(video: HTMLVideoElement, maxSide = 800, quality = 0.75): string | null {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return null;
   const scale = Math.min(1, maxSide / Math.max(vw, vh));

@@ -18,7 +18,9 @@
 // the label hint tells it where the nameplate / price tag is, and the label text
 // it reads is returned so the app can show it.
 //
-// Secrets: ANTHROPIC_API_KEY (required), ANTHROPIC_MODEL (optional).
+// Secrets: ANTHROPIC_API_KEY (required). RECOGNISE_MODEL (optional) picks the
+// model for this function; it defaults to the fast Haiku tier, which is enough
+// for choosing among a short catalogue. ANTHROPIC_MODEL is the Ask AI model.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -30,12 +32,12 @@ const corsHeaders = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
-const MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5-5';
+const MODEL = Deno.env.get('RECOGNISE_MODEL') ?? 'claude-haiku-5-5';
 const MAX_IMAGE_BYTES = 1_500_000; // the app sends a ~1024px JPEG, well under this
 // Reference photos cost tokens on every tap, so a budget: a few per product and a
 // total across the catalogue. One photo per distinct side is picked first.
-const MAX_REFERENCE_IMAGES_PER_PRODUCT = 4;
-const MAX_REFERENCE_IMAGES_TOTAL = 36;
+const MAX_REFERENCE_IMAGES_PER_PRODUCT = 3;
+const MAX_REFERENCE_IMAGES_TOTAL = 18;
 const MAX_PRODUCTS = 40;
 const VIEWS = ['front', 'rear', 'side', 'interior', 'dashboard', 'boot', 'engine', 'wheels', 'top', 'display', 'label'];
 const MONTHLY_CAP_MULTIPLIER = 1; // shares the client's Ask AI monthly cap
@@ -86,9 +88,14 @@ Deno.serve(async (req) => {
   const { data: tenant } = await admin.from('tenants').select('id, name, slug, is_active, assistant_monthly_cap').eq('slug', body.tenant_slug).maybeSingle();
   if (!tenant || !tenant.is_active) return json(404, { error: 'Not found' });
 
-  const { data: products } = await admin.from('products')
-    .select('id, slug, name, description, thumbnail_url, reference_images, label_hint, floor_enabled, is_active')
-    .eq('tenant_id', tenant.id).eq('is_active', true).eq('floor_enabled', true).order('display_order').limit(MAX_PRODUCTS);
+  // Products and the monthly count in parallel: every round trip here is felt on the floor.
+  const monthStart = new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
+  const [{ data: products }, { count }] = await Promise.all([
+    admin.from('products')
+      .select('id, slug, name, description, thumbnail_url, reference_images, label_hint, floor_enabled, is_active')
+      .eq('tenant_id', tenant.id).eq('is_active', true).eq('floor_enabled', true).order('display_order').limit(MAX_PRODUCTS),
+    admin.from('recognitions').select('id', { count: 'exact', head: true }).eq('tenant_id', tenant.id).gte('created_at', monthStart.toISOString()),
+  ]);
   if (!products?.length) return json(404, { error: 'No products are set up for the floor yet.' });
 
   const log = async (fields: Record<string, unknown>) => {
@@ -100,9 +107,6 @@ Deno.serve(async (req) => {
   };
 
   // Shares the Ask AI monthly cap so a busy floor cannot run up an unexpected bill.
-  const monthStart = new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-  const { count } = await admin.from('recognitions').select('id', { count: 'exact', head: true })
-    .eq('tenant_id', tenant.id).gte('created_at', monthStart.toISOString());
   if ((count ?? 0) >= tenant.assistant_monthly_cap * MONTHLY_CAP_MULTIPLIER) {
     return json(429, { error: 'Recognition has reached its monthly limit. Pick the product from the list.' });
   }
@@ -145,7 +149,7 @@ Respond with JSON only:
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 500, system, messages: [{ role: 'user', content }] }),
+      body: JSON.stringify({ model: MODEL, max_tokens: 300, system, messages: [{ role: 'user', content }] }),
     });
     if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const out = await res.json();
