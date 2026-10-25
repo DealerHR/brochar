@@ -9,6 +9,8 @@ export type RecogniseResult = {
   candidates: RecogniseCandidate[];
   label_text: string;
   confidence: 'high' | 'medium' | 'low' | 'none';
+  /** Side of the product in the photo, one of the PRODUCT_VIEWS values, or 'any'. */
+  view: string;
 };
 
 /** Grabs the current camera frame as a JPEG (longest side ≤ maxSide), base64 without the data: prefix. */

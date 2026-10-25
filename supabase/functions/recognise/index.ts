@@ -6,7 +6,11 @@
 //
 // POST { tenant_slug, image: "<base64 jpeg, no data: prefix>", session_id?, team? }
 // -> { id, candidates: [{ product_id, slug, name, thumbnail_url, confidence, reason }],
-//      label_text, confidence: 'high' | 'medium' | 'low' | 'none' }
+//      label_text, confidence: 'high' | 'medium' | 'low' | 'none', view }
+//
+// "view" is the side of the product in the photo (front, rear, side, interior,
+// dashboard, boot, engine, wheels, top, display, label, or any) so the floor app
+// can show the features on that side first.
 //
 // How it decides: the model sees the photo plus the client's catalogue (name,
 // description, label hint, up to two reference images per product) and must pick
@@ -28,14 +32,37 @@ const json = (status: number, body: unknown) =>
 
 const MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5-5';
 const MAX_IMAGE_BYTES = 1_500_000; // the app sends a ~1024px JPEG, well under this
-const MAX_REFERENCE_IMAGES_PER_PRODUCT = 2;
+// Reference photos cost tokens on every tap, so a budget: a few per product and a
+// total across the catalogue. One photo per distinct side is picked first.
+const MAX_REFERENCE_IMAGES_PER_PRODUCT = 4;
+const MAX_REFERENCE_IMAGES_TOTAL = 36;
 const MAX_PRODUCTS = 40;
+const VIEWS = ['front', 'rear', 'side', 'interior', 'dashboard', 'boot', 'engine', 'wheels', 'top', 'display', 'label'];
 const MONTHLY_CAP_MULTIPLIER = 1; // shares the client's Ask AI monthly cap
 
 type Candidate = { product_id: string; slug: string; name: string; thumbnail_url: string | null; confidence: 'high' | 'medium' | 'low'; reason: string };
 type Confidence = 'high' | 'medium' | 'low' | 'none';
 
-function parseModelJson(text: string): { candidates?: unknown; label_text?: unknown } {
+type Ref = { url: string; view: string };
+function refsOf(raw: unknown): Ref[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Ref[] = [];
+  for (const r of raw) {
+    const url = typeof r === 'string' ? r : r?.url;
+    const view = typeof r === 'object' && r && VIEWS.includes(r.view) ? r.view : 'any';
+    if (typeof url === 'string' && /^https?:\/\//.test(url)) out.push({ url, view });
+  }
+  return out;
+}
+/** One photo per distinct side first, then the rest, up to the per-product cap. */
+function pickRefs(refs: Ref[], cap: number): Ref[] {
+  const seen = new Set<string>();
+  const first: Ref[] = [], rest: Ref[] = [];
+  for (const r of refs) { if (r.view !== 'any' && !seen.has(r.view)) { seen.add(r.view); first.push(r); } else rest.push(r); }
+  return [...first, ...rest].slice(0, cap);
+}
+
+function parseModelJson(text: string): { candidates?: unknown; label_text?: unknown; view?: unknown } {
   const body = text.replace(/```(?:json)?/g, '').trim();
   const m = body.match(/\{[\s\S]*\}/);
   try { return JSON.parse(m ? m[0] : body); } catch { throw new Error(`model reply not readable: ${body.slice(0, 120)}`); }
@@ -87,12 +114,11 @@ Deno.serve(async (req) => {
 
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];
+  const perProduct = Math.max(1, Math.min(MAX_REFERENCE_IMAGES_PER_PRODUCT, Math.floor(MAX_REFERENCE_IMAGES_TOTAL / products.length)));
   for (let i = 0; i < products.length; i++) {
-    const refs: string[] = Array.isArray(products[i].reference_images) ? products[i].reference_images.slice(0, MAX_REFERENCE_IMAGES_PER_PRODUCT) : [];
-    for (const url of refs) {
-      if (typeof url !== 'string' || !/^https?:\/\//.test(url)) continue;
-      content.push({ type: 'text', text: `Reference photo of P${i + 1} (${products[i].name}):` });
-      content.push({ type: 'image', source: { type: 'url', url } });
+    for (const r of pickRefs(refsOf(products[i].reference_images), perProduct)) {
+      content.push({ type: 'text', text: `Reference photo of P${i + 1} (${products[i].name})${r.view !== 'any' ? `, ${r.view} view` : ''}:` });
+      content.push({ type: 'image', source: { type: 'url', url: r.url } });
     }
   }
   content.push({ type: 'text', text: 'PHOTO TAKEN NOW on the showroom floor:' });
@@ -110,9 +136,10 @@ RULES:
 - If the photo shows none of the catalogue products, or no product at all, return an empty candidates list.
 - Never invent a product that is not in the catalogue. Never guess a variant from colour alone.
 - "reason" is one short phrase a salesperson can read, e.g. "Badge on the boot reads TIAGO.EV".
+- "view" is the side or part of the product the photo shows, one of: ${VIEWS.join(', ')}; use "any" if unclear or if several sides are equally visible. For a vehicle: front = grille/headlamps, rear = boot/tail lamps, side = door profile, interior = seats/cabin, dashboard = steering/console, boot = open luggage area, engine = open bonnet, wheels = a wheel close up, top = roof/sunroof, display = a screen or controls, label = a nameplate or sticker close up.
 
 Respond with JSON only:
-{"label_text": string, "candidates": [{"id": "P3", "confidence": "high" | "medium" | "low", "reason": string}]}`;
+{"label_text": string, "view": string, "candidates": [{"id": "P3", "confidence": "high" | "medium" | "low", "reason": string}]}`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -139,12 +166,13 @@ Respond with JSON only:
     }
     const label_text = String(parsed.label_text ?? '').slice(0, 200);
     const confidence: Confidence = candidates[0]?.confidence ?? 'none';
+    const view = VIEWS.includes(String(parsed.view)) ? String(parsed.view) : 'any';
 
     const id = await log({
       candidates: candidates.map(c => ({ product_id: c.product_id, confidence: c.confidence, reason: c.reason })),
-      label_text: label_text || null, top_product_id: candidates[0]?.product_id ?? null, confidence,
+      label_text: label_text || null, top_product_id: candidates[0]?.product_id ?? null, confidence, view,
     });
-    return json(200, { id, candidates, label_text, confidence });
+    return json(200, { id, candidates, label_text, confidence, view });
   } catch (err) {
     console.error(err);
     await log({ confidence: 'error', error: String(err).slice(0, 500) });

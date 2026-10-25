@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from '../lib/router';
 import {
-  supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, LinkData, PdfData, ActionData,
+  supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, LinkData, PdfData, ActionData, viewLabel,
 } from '../lib/supabase';
 import { ArSession } from '../lib/analytics';
 import { isHttpUrl } from '../lib/validation';
@@ -76,6 +76,9 @@ export default function FloorPage() {
   const [pdfOverlay, setPdfOverlay] = useState<{ url: string; label: string } | null>(null);
   const [asking, setAsking] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  // Side of the product the phone last looked at; orders the feature tiles.
+  const [view, setView] = useState<string>('any');
+  const [relooking, setRelooking] = useState(false);
 
   const brandColor = tenant?.brand_color ?? '#0A2463';
   const askEnabled = !!tenant && tenant.assistant_scope !== 'off';
@@ -149,6 +152,7 @@ export default function FloorPage() {
     try {
       const r = await recogniseProduct({ tenant_slug: tenant.slug, image, team: true, session_id: sessionRef.current?.sessionId });
       setResult(r);
+      setView(r.view ?? 'any');
       const top = r.candidates[0];
       if (top && top.confidence === 'high') {
         // Opens by itself after a moment; "Not this?" cancels.
@@ -159,6 +163,32 @@ export default function FloorPage() {
     } finally {
       setRecognising(false);
     }
+  }
+
+  /**
+   * While a product is open: look again at the product to update the side in view.
+   * Switches product only on a confident match for a different one.
+   */
+  async function relook() {
+    const video = videoRef.current;
+    if (!video || relooking || !tenant || !product) return;
+    const image = captureFrame(video);
+    if (!image) return;
+    setRelooking(true);
+    if (navigator.vibrate) navigator.vibrate(30);
+    try {
+      const r = await recogniseProduct({ tenant_slug: tenant.slug, image, team: true, session_id: sessionRef.current?.sessionId });
+      setView(r.view ?? 'any');
+      const top = r.candidates[0];
+      if (top && top.confidence === 'high' && top.product_id !== product.id) {
+        const p = products.find(x => x.id === top.product_id);
+        if (p) { recordChoice(r.id, p.id); await openProduct(p); }
+      } else {
+        recordChoice(r.id, product.id);
+      }
+    } catch (err) {
+      console.warn('relook', err);
+    } finally { setRelooking(false); }
   }
 
   function cancelAutoOpen() {
@@ -205,6 +235,7 @@ export default function FloorPage() {
     window.speechSynthesis?.cancel();
     setProduct(null); setBundle(null); bundleRef.current = null; sessionRef.current = null;
     setPopup(null); setAsking(false); setLinkOverlay(null); setPdfOverlay(null);
+    setView('any');
   }
 
   function tapHotspot(h: Hotspot) {
@@ -282,7 +313,7 @@ export default function FloorPage() {
     <div className="fixed inset-0 bg-black overflow-hidden select-none" onPointerDown={firstTap}>
       {/* Live camera */}
       <video ref={videoRef} playsInline muted autoPlay className="absolute inset-0 w-full h-full object-cover" />
-      {product && <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-[2px]" />}
+      {product && <div className="absolute inset-0 bg-slate-950/60" />}
 
       {/* Loading / denied */}
       {phase === 'loading' && (
@@ -427,8 +458,12 @@ export default function FloorPage() {
             </button>
             <div className="flex-1 min-w-0">
               <p className="text-white font-black text-base leading-tight truncate">{product.name}</p>
-              <p className="text-white/60 text-[11px]">Tap a feature to show it</p>
+              <p className="text-white/60 text-[11px] truncate">{view !== 'any' ? `Looking at: ${viewLabel(view)}` : 'Tap a feature to show it'}</p>
             </div>
+            <button onClick={relook} disabled={relooking} aria-label="Look again"
+              className="w-11 h-11 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white active:scale-95 disabled:opacity-50">
+              {relooking ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <ScanSearch className="w-5 h-5" />}
+            </button>
             <button onClick={() => setShareOpen(true)} aria-label="Send to customer"
               className="w-11 h-11 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white active:scale-95">
               <Share2 className="w-5 h-5" />
@@ -441,31 +476,47 @@ export default function FloorPage() {
             )}
             {bundleError && <p className="text-white/70 text-sm text-center pt-16">{bundleError}</p>}
             {bundle && bundle.hotspots.length === 0 && <p className="text-white/70 text-sm text-center pt-16">No features added yet.</p>}
-            {bundle && bundle.hotspots.length > 0 && (
-              <div className="grid grid-cols-2 gap-2.5">
-                {bundle.hotspots.map((h, i) => {
-                  const blocks = bundle.blocks[h.id] ?? [];
-                  const main = blocks.find(b => b.kind === 'video') ?? blocks.find(b => b.kind !== 'text') ?? blocks[0];
-                  const Icon = kindIcon(main?.kind);
-                  const hasTeam = blocks.some(b => b.audience === 'team');
-                  const thumb = blocks.find(b => b.kind === 'image')?.data as { url?: string } | undefined;
-                  return (
-                    <button key={h.id} onClick={() => tapHotspot(h)}
-                      className="relative text-left rounded-2xl overflow-hidden bg-white/10 border border-white/15 active:scale-[0.98] transition min-h-[118px] flex flex-col justify-end p-3">
-                      {thumb?.url && <img src={thumb.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-40" />}
-                      <div className="relative">
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <span className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[11px] font-black" style={{ backgroundColor: h.dot_color }}>{i + 1}</span>
-                          <Icon className="w-4 h-4 text-white/80" />
-                          {hasTeam && <span className="ml-auto text-[9px] font-black uppercase tracking-wide bg-amber-400 text-amber-950 px-1.5 py-0.5 rounded">Team</span>}
-                        </div>
-                        <p className="text-white font-bold text-sm leading-snug line-clamp-2">{h.label}</p>
+            {bundle && bundle.hotspots.length > 0 && (() => {
+              const numberOf = new Map(bundle.hotspots.map((h, i) => [h.id, i + 1]));
+              const here = view === 'any' ? [] : bundle.hotspots.filter(h => h.view === view);
+              const rest = view === 'any' ? bundle.hotspots : bundle.hotspots.filter(h => h.view !== view);
+              const tile = (h: Hotspot) => {
+                const blocks = bundle.blocks[h.id] ?? [];
+                const main = blocks.find(b => b.kind === 'video') ?? blocks.find(b => b.kind !== 'text') ?? blocks[0];
+                const Icon = kindIcon(main?.kind);
+                const hasTeam = blocks.some(b => b.audience === 'team');
+                const thumb = blocks.find(b => b.kind === 'image')?.data as { url?: string } | undefined;
+                return (
+                  <button key={h.id} onClick={() => tapHotspot(h)}
+                    className="relative text-left rounded-2xl overflow-hidden bg-white/10 border border-white/15 active:scale-[0.98] transition min-h-[118px] flex flex-col justify-end p-3">
+                    {thumb?.url && <img src={thumb.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-40" />}
+                    <div className="relative">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[11px] font-black" style={{ backgroundColor: h.dot_color }}>{numberOf.get(h.id)}</span>
+                        <Icon className="w-4 h-4 text-white/80" />
+                        {hasTeam && <span className="ml-auto text-[9px] font-black uppercase tracking-wide bg-amber-400 text-amber-950 px-1.5 py-0.5 rounded">Team</span>}
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                      <p className="text-white font-bold text-sm leading-snug line-clamp-2">{h.label}</p>
+                    </div>
+                  </button>
+                );
+              };
+              return (
+                <>
+                  {here.length > 0 && (
+                    <>
+                      <p className="text-white/70 text-[11px] font-black uppercase tracking-wide mb-2 mt-1">On this side</p>
+                      <div className="grid grid-cols-2 gap-2.5 mb-4">{here.map(tile)}</div>
+                      {rest.length > 0 && <p className="text-white/50 text-[11px] font-black uppercase tracking-wide mb-2">More features</p>}
+                    </>
+                  )}
+                  {view !== 'any' && here.length === 0 && (
+                    <p className="text-white/50 text-[11px] mb-2 mt-1">No feature is tagged for the {viewLabel(view).toLowerCase()} yet. All features:</p>
+                  )}
+                  <div className="grid grid-cols-2 gap-2.5">{rest.map(tile)}</div>
+                </>
+              );
+            })()}
           </div>
 
           {askEnabled && !overlayOpen && (

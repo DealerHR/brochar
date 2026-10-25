@@ -79,13 +79,36 @@ export type Product = {
   description: string | null;
   display_order: number;
   is_active: boolean;
-  /** Up to 4 public photo URLs used by floor recognition. */
-  reference_images: string[];
+  /** Up to 12 reference photos used by floor recognition; older rows hold plain URL strings. */
+  reference_images: Array<string | ReferenceImage>;
   /** Where the identifying label / nameplate / price tag is. */
   label_hint: string;
   floor_enabled: boolean;
   created_at: string;
 };
+
+export type ReferenceImage = { url: string; view: ProductView };
+
+/** Sides of a product a hotspot or photo can belong to. 'any' = not tied to a side. */
+export type ProductView = 'any' | 'front' | 'rear' | 'side' | 'interior' | 'dashboard' | 'boot' | 'engine' | 'wheels' | 'top' | 'display' | 'label';
+export const PRODUCT_VIEWS: { value: ProductView; label: string }[] = [
+  { value: 'any', label: 'Anywhere / not tied to a side' },
+  { value: 'front', label: 'Front' },
+  { value: 'rear', label: 'Rear' },
+  { value: 'side', label: 'Side' },
+  { value: 'interior', label: 'Interior / cabin' },
+  { value: 'dashboard', label: 'Dashboard / console' },
+  { value: 'boot', label: 'Boot / storage' },
+  { value: 'engine', label: 'Engine / under the bonnet' },
+  { value: 'wheels', label: 'Wheels / tyres' },
+  { value: 'top', label: 'Roof / top' },
+  { value: 'display', label: 'Screen / display / controls' },
+  { value: 'label', label: 'Label / nameplate / badge' },
+];
+export const viewLabel = (v: string | null | undefined) => PRODUCT_VIEWS.find(x => x.value === v)?.label ?? 'Anywhere';
+export function normaliseReference(r: string | ReferenceImage): ReferenceImage {
+  return typeof r === 'string' ? { url: r, view: 'any' } : { url: r.url, view: r.view ?? 'any' };
+}
 
 export type Recognition = {
   id: string;
@@ -97,6 +120,7 @@ export type Recognition = {
   top_product_id: string | null;
   chosen_product_id: string | null;
   confidence: 'high' | 'medium' | 'low' | 'none' | 'error' | null;
+  view: string | null;
   latency_ms: number | null;
   error: string | null;
   created_at: string;
@@ -138,6 +162,8 @@ export type Hotspot = {
   image_url: string | null;
   display_order: number;
   tap_action: 'card' | 'launch';
+  /** Which side of the real product this feature sits on (floor app ordering). */
+  view: ProductView;
   created_at: string;
 };
 

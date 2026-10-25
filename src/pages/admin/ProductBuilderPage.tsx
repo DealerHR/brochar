@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from '../../lib/router';
-import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, ActionData } from '../../lib/supabase';
+import { supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, ActionData, ProductView, PRODUCT_VIEWS } from '../../lib/supabase';
 import BlockEditor from '../../components/BlockEditor';
 import QrModal from '../../components/QrModal';
 import KnowledgePanel from '../../components/KnowledgePanel';
@@ -18,6 +18,7 @@ type HotspotForm = {
   label: string;
   dot_color: string;
   tap_action: 'card' | 'launch';
+  view: ProductView;
 };
 
 const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
@@ -220,7 +221,7 @@ export default function ProductBuilderPage() {
   function openHotspot(h: Hotspot) {
     setSelectedHotspot(h);
     setEditBlocks(blocks[h.id] ?? []);
-    setHotspotForm({ label: h.label, dot_color: h.dot_color, tap_action: h.tap_action ?? 'card' });
+    setHotspotForm({ label: h.label, dot_color: h.dot_color, tap_action: h.tap_action ?? 'card', view: h.view ?? 'any' });
   }
 
   // Fix 1: drag handlers for repositioning hotspots
@@ -298,7 +299,7 @@ export default function ProductBuilderPage() {
     const pos_x = liveHotspot?.pos_x ?? selectedHotspot.pos_x;
     const pos_y = liveHotspot?.pos_y ?? selectedHotspot.pos_y;
 
-    const payload = { label, dot_color: hotspotForm.dot_color, tap_action: hotspotForm.tap_action };
+    const payload = { label, dot_color: hotspotForm.dot_color, tap_action: hotspotForm.tap_action, view: hotspotForm.view };
     const { error } = await supabase.from('hotspots').update(payload).eq('id', selectedHotspot.id);
     if (error) { setNotice(error.message); setSavingHotspot(false); return; }
 
@@ -659,6 +660,15 @@ export default function ProductBuilderPage() {
                   <option value="card">Open the content card</option>
                   <option value="launch">Launch the first link, document, video or contact button straight away</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-brand-navy mb-1.5">Where on the product</label>
+                <select value={hotspotForm.view} onChange={e => setHotspotForm(f => f ? { ...f, view: e.target.value as ProductView } : f)}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-navy transition">
+                  {PRODUCT_VIEWS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1">On the sales floor, features on the side the phone is pointing at are shown first.</p>
               </div>
 
               <div className="pt-3 border-t border-slate-100">
