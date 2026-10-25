@@ -79,6 +79,26 @@ export type Product = {
   description: string | null;
   display_order: number;
   is_active: boolean;
+  /** Up to 4 public photo URLs used by floor recognition. */
+  reference_images: string[];
+  /** Where the identifying label / nameplate / price tag is. */
+  label_hint: string;
+  floor_enabled: boolean;
+  created_at: string;
+};
+
+export type Recognition = {
+  id: string;
+  tenant_id: string;
+  session_id: string | null;
+  team: boolean;
+  candidates: { product_id: string; confidence: 'high' | 'medium' | 'low'; reason: string }[];
+  label_text: string | null;
+  top_product_id: string | null;
+  chosen_product_id: string | null;
+  confidence: 'high' | 'medium' | 'low' | 'none' | 'error' | null;
+  latency_ms: number | null;
+  error: string | null;
   created_at: string;
 };
 
@@ -196,7 +216,7 @@ export type ArEvent = {
   hotspot_id: string | null;
   event_type: ArEventType;
   platform: 'ios' | 'android' | 'desktop' | 'other' | null;
-  source: 'qr' | 'link' | 'learn' | null;
+  source: 'qr' | 'link' | 'learn' | 'floor' | null;
   occurred_at: string;
   date_key: string;
 };

@@ -152,7 +152,7 @@ export default function AnalyticsPage() {
 
       {totals.sessions > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {[{ title: 'Sessions by source', data: sources, labels: { qr: 'Customer QR', link: 'Shared link', learn: 'Sales team QR' } as Record<string, string> },
+          {[{ title: 'Sessions by source', data: sources, labels: { qr: 'Customer QR', link: 'Shared link', learn: 'Sales team QR', floor: 'Sales floor app' } as Record<string, string> },
             { title: 'Sessions by device', data: platforms, labels: { ios: 'iPhone / iPad', android: 'Android', desktop: 'Desktop', other: 'Other' } as Record<string, string> }].map(card => (
             <div key={card.title} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
               <h2 className="text-sm font-black text-brand-navy mb-3 uppercase tracking-wide">{card.title}</h2>

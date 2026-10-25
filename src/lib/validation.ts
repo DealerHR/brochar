@@ -2,6 +2,8 @@
 // so these only exist to give a clear message before the request is sent.
 
 export const RESERVED_TENANT_SLUGS = ['admin', 'login', 'reset-password', 'api', 'assets', 'static', 'auth', 'storage'];
+// Product slugs that would clash with the client's own routes (/{tenant}/floor).
+export const RESERVED_PRODUCT_SLUGS = ['floor', 'team', 'learn'];
 
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
@@ -15,6 +17,7 @@ export function slugError(slug: string, kind: 'tenant' | 'product' = 'product'):
   if (slug.length < 2 || slug.length > 60) return 'Slug must be 2 to 60 characters.';
   if (!SLUG_RE.test(slug)) return 'Use lowercase letters, numbers and single hyphens only.';
   if (kind === 'tenant' && RESERVED_TENANT_SLUGS.includes(slug)) return `"${slug}" is reserved. Pick another slug.`;
+  if (kind === 'product' && RESERVED_PRODUCT_SLUGS.includes(slug)) return `"${slug}" is reserved. Pick another slug.`;
   return null;
 }
 

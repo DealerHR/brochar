@@ -15,6 +15,7 @@ import LeadsPage from './pages/admin/LeadsPage';
 import QuestionsPage from './pages/admin/QuestionsPage';
 import ClientLandingPage from './pages/ClientLandingPage';
 import ARPlayerPage from './pages/ARPlayerPage';
+import FloorPage from './pages/FloorPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import { ShieldOff } from 'lucide-react';
 
@@ -71,6 +72,8 @@ export default function App() {
 
           {/* Public client pages */}
           <Route path="/:tenantSlug" element={<ClientLandingPage />} />
+          {/* Sales floor app: point the phone at the real product. Before the product routes so "floor" is not read as a product slug. */}
+          <Route path="/:tenantSlug/floor" element={<FloorPage />} />
           <Route path="/:tenantSlug/:productSlug" element={<ARPlayerPage />} />
           <Route path="/:tenantSlug/:productSlug/team" element={<ARPlayerPage teamMode />} />
           <Route path="/:tenantSlug/:productSlug/learn" element={<ARPlayerPage teamMode />} />

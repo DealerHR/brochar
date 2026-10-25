@@ -6,6 +6,7 @@ import { uploadFile, fileExtension, removeFolder, pathFromPublicUrl, removeFiles
 import { slugError, hexColorError, fileTooLarge, MAX_IMAGE_BYTES, toSlug } from '../../lib/validation';
 import TenantTeam from '../../components/TenantTeam';
 import QrModal from '../../components/QrModal';
+import FloorLinkCard from '../../components/FloorLinkCard';
 import { ArrowLeft, Plus, Package, Pencil, ExternalLink, Upload, X, Check, Trash2, QrCode } from 'lucide-react';
 
 export default function ClientDetailPage() {
@@ -259,6 +260,8 @@ export default function ClientDetailPage() {
           <div className="w-5 h-5 rounded-full shadow-md border-2 border-white flex-shrink-0" style={{ backgroundColor: tenant.brand_color }} />
         </div>
       </div>
+
+      <FloorLinkCard tenant={tenant} />
 
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-xl font-black text-brand-navy">Products</h2>
