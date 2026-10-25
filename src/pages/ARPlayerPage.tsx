@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from '../lib/router';
+import { useParams } from '../lib/router';
 import {
   supabase, Brochure, BrochurePage, Hotspot, HotspotBlock, Product, Tenant, LinkData, PdfData, ActionData,
 } from '../lib/supabase';
@@ -10,12 +10,25 @@ import HotspotCard from '../components/HotspotCard';
 import LinkOverlay from '../components/LinkOverlay';
 import PdfOverlay from '../components/PdfOverlay';
 import AskCard from '../components/AskCard';
-import { AlertCircle, ChevronLeft, UserCheck, Eye, Camera, Mic } from 'lucide-react';
+import { AlertCircle, ChevronLeft, UserCheck, Eye, Camera, Mic, RotateCcw, MessageCircle, Phone } from 'lucide-react';
 
 /* ---------- small helpers ---------- */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const doc = document as any;
+
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// Browsers only allow fullscreen after a tap. iPhone Safari does not allow it for pages at all.
+async function enterFullscreen() {
+  if (isIOS) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const el = document.documentElement as any;
+    if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: 'hide' });
+    else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+  } catch { /* refused or unsupported */ }
+}
 
 async function leaveFullscreen() {
   try {
@@ -39,13 +52,12 @@ type Loaded = {
   pages: BrochurePage[]; hotspots: Hotspot[]; blocks: Record<string, HotspotBlock[]>;
 };
 
-type Phase = 'loading' | 'camera-denied' | 'running' | 'error';
+type Phase = 'loading' | 'camera-denied' | 'running' | 'ended' | 'error';
 
 /* ---------- page ---------- */
 
 export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean }) {
   const { tenantSlug, productSlug } = useParams();
-  const navigate = useNavigate();
   // Where the visitor came from: the customer QR carries ?src=qr.
   const source: 'qr' | 'link' | 'learn' = teamMode ? 'learn' : new URLSearchParams(window.location.search).get('src') === 'qr' ? 'qr' : 'link';
 
@@ -59,6 +71,8 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const lastTapRef = useRef(0);
   const lastPopupOpenRef = useRef(0);
   const loadedRef = useRef<Loaded | null>(null);
+  // Re-measures the AR layer after the viewport changes (keyboard, fullscreen, card close).
+  const resyncRef = useRef<() => void>(() => {});
   const isLandscapeRef = useRef(readIsLandscape());
 
   const [phase, setPhase] = useState<Phase>('loading');
@@ -165,6 +179,16 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       const mindResponse = await fetch(brochure.mind_file_url!);
       const mindBlob = URL.createObjectURL(new Blob([await mindResponse.arrayBuffer()]));
 
+      // One permission prompt for camera and microphone together (the mic is for Ask AI),
+      // so the user is not asked a second time later. MindAR then opens the camera itself.
+      const wantsMic = loaded.tenant.assistant_scope !== 'off' && (loaded.tenant.assistant_scope !== 'team' || teamMode);
+      if (wantsMic && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const warm = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
+          warm.getTracks().forEach(t => t.stop());
+        } catch { /* mic refused or unavailable: Ask AI falls back to typing */ }
+      }
+
       const MINDAR = requireMindAR();
       const THREE = MINDAR.IMAGE.THREE;
       const MindARThreeCtor = MINDAR.IMAGE.MindARThree;
@@ -241,16 +265,39 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
 
       // Let CSS do the cover-fit for the camera video. Only set individual properties;
       // replacing cssText would wipe MindAR's own z-index and break the layer order.
-      const vid = container.querySelector('video') as HTMLVideoElement | null;
-      if (vid) { vid.style.top = '0'; vid.style.left = '0'; vid.style.width = '100%'; vid.style.height = '100%'; vid.style.objectFit = 'cover'; }
-
-      // Rotation: MindAR sizes its projection from the camera stream it opened, so after the
-      // phone turns the dots drift off the page. Restart tracking (no new permission prompt)
-      // once the viewport has settled. Also covers landscape and portrait brochures alike.
       const styleVideo = () => {
         const v = container.querySelector('video') as HTMLVideoElement | null;
         if (v) { v.style.top = '0'; v.style.left = '0'; v.style.width = '100%'; v.style.height = '100%'; v.style.objectFit = 'cover'; }
       };
+      styleVideo();
+
+      // Viewport changes (keyboard, fullscreen, address bar) can leave MindAR's canvas sized
+      // for a half-finished layout, which shows as a black band. Re-measure once things settle.
+      let resyncTimer: ReturnType<typeof setTimeout> | null = null;
+      const resync = () => {
+        if (resyncTimer) clearTimeout(resyncTimer);
+        resyncTimer = setTimeout(() => {
+          if (mindARRef.current !== mindar) return;
+          syncContainerSize();
+          try { (mindar as unknown as { resize: () => void }).resize(); } catch { /* not ready */ }
+          styleVideo();
+        }, 250);
+      };
+      resyncRef.current = resync;
+      window.addEventListener('resize', resync);
+      window.visualViewport?.addEventListener('resize', resync);
+      document.addEventListener('fullscreenchange', resync);
+      document.addEventListener('webkitfullscreenchange', resync);
+      listenersRef.current.push(
+        () => window.removeEventListener('resize', resync),
+        () => window.visualViewport?.removeEventListener('resize', resync),
+        () => document.removeEventListener('fullscreenchange', resync),
+        () => document.removeEventListener('webkitfullscreenchange', resync),
+      );
+
+      // Rotation: MindAR sizes its projection from the camera stream it opened, so after the
+      // phone turns the dots drift off the page. Restart tracking (no new permission prompt)
+      // once the viewport has settled. Also covers landscape and portrait brochures alike.
       let rotateTimer: ReturnType<typeof setTimeout> | null = null;
       let restarting = false;
       const restartTracking = async () => {
@@ -311,8 +358,11 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
         if (best) handleHotspotTap(best.hotspot);
       };
       let touchStartX = 0, touchStartY = 0;
+      let askedFullscreen = false;
       const touchStartH = (e: TouchEvent) => { const t = e.touches[0]; if (t) { touchStartX = t.clientX; touchStartY = t.clientY; } };
       const touchEndH = (e: TouchEvent) => {
+        // The first tap is the earliest moment a browser lets us go fullscreen.
+        if (!askedFullscreen) { askedFullscreen = true; enterFullscreen().then(resync); }
         const t = e.changedTouches[0];
         if (t && Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY) < 12) onTap(t.clientX, t.clientY);
       };
@@ -401,15 +451,27 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
     if (Date.now() - lastPopupOpenRef.current < 600) return;
     window.speechSynthesis?.cancel();
     setPopup(null);
+    resyncRef.current();
   }
 
+  /** Ends the experience: camera off, a closing screen, nothing else reachable. */
   async function exitAR() {
     window.speechSynthesis?.cancel();
-    mindARRef.current?.stop();
+    setPopup(null); setAsking(false); setLinkOverlay(null); setPdfOverlay(null);
+    try { mindARRef.current?.stop(); } catch { /* already stopped */ }
     mindARRef.current = null;
+    dotsRef.current = [];
+    listenersRef.current.forEach(fn => fn());
+    listenersRef.current = [];
     await leaveFullscreen();
-    // A page opened from a QR has no history to go back to, so go to the client's page.
-    navigate(`/${tenantSlug}`, true);
+    setPhase('ended');
+  }
+
+  /** From the closing screen: start the camera again. */
+  async function scanAgain() {
+    const container = arDivRef.current;
+    if (container) container.innerHTML = '';
+    if (loadedRef.current) await startAR(loadedRef.current);
   }
 
   /* ---------- render ---------- */
@@ -417,6 +479,35 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const tenant = data?.tenant ?? null;
   const brandColor = tenant?.brand_color ?? '#0A2463';
   const running = phase === 'running';
+  const waNumber = (tenant?.whatsapp_number ?? '').replace(/[^0-9+]/g, '');
+  const phNumber = (tenant?.phone_number ?? '').replace(/[^0-9+]/g, '');
+
+  if (phase === 'ended') return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} className="bg-slate-950 flex flex-col items-center justify-center px-8 text-center">
+      {tenant?.logo_url
+        ? <img src={tenant.logo_url} alt="" className="h-14 max-w-[60vw] object-contain mb-6 opacity-95" />
+        : <div className="w-12 h-12 rounded-2xl mb-6 flex items-center justify-center text-white font-black text-xl" style={{ backgroundColor: brandColor }}>{tenant?.name?.[0] ?? ''}</div>}
+      <h1 className="text-white font-bold text-xl mb-1">Thanks for exploring {data?.product.name ?? 'the brochure'}</h1>
+      <p className="text-slate-400 text-sm mb-8 max-w-xs">{tenant?.name ? `${tenant.name} is happy to help with anything else.` : ''}</p>
+      <div className="flex flex-col gap-2 w-full max-w-xs">
+        <button onClick={scanAgain} className="inline-flex items-center justify-center gap-2 text-white font-bold px-6 py-3 rounded-full text-sm shadow-lg active:scale-95" style={{ backgroundColor: brandColor }}>
+          <RotateCcw className="w-4 h-4" /> Scan again
+        </button>
+        {waNumber && (
+          <a href={`https://wa.me/${waNumber.replace('+', '')}`} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 text-white font-bold px-6 py-3 rounded-full text-sm" style={{ backgroundColor: '#25D366' }}>
+            <MessageCircle className="w-4 h-4" /> WhatsApp us
+          </a>
+        )}
+        {phNumber && (
+          <a href={`tel:${phNumber}`} className="inline-flex items-center justify-center gap-2 text-white/90 font-bold px-6 py-3 rounded-full text-sm bg-white/10 border border-white/15">
+            <Phone className="w-4 h-4" /> Call us
+          </a>
+        )}
+      </div>
+      <p className="text-slate-600 text-xs mt-8">You can close this page now.</p>
+    </div>
+  );
   const askEnabled = !!tenant && tenant.assistant_scope !== 'off' && (tenant.assistant_scope !== 'team' || teamMode);
 
   if (phase === 'error') return (
@@ -496,7 +587,7 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       )}
       {asking && tenant && (
         <AskCard tenant={tenant} productSlug={productSlug!} team={teamMode} sessionId={sessionRef.current?.sessionId} source={source} brandColor={brandColor}
-          onClose={() => setAsking(false)}
+          onClose={() => { setAsking(false); resyncRef.current(); }}
           onSourceTap={hotspotId => {
             const h = loadedRef.current?.hotspots.find(x => x.id === hotspotId);
             if (h) { setAsking(false); lastPopupOpenRef.current = Date.now(); setPopup(h); }
