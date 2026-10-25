@@ -9,27 +9,16 @@ import { isHttpUrl } from '../lib/validation';
 import HotspotCard from '../components/HotspotCard';
 import LinkOverlay from '../components/LinkOverlay';
 import PdfOverlay from '../components/PdfOverlay';
-import { AlertCircle, ChevronLeft, UserCheck, Eye, Maximize, Minimize, Camera } from 'lucide-react';
+import { AlertCircle, ChevronLeft, UserCheck, Eye, Camera } from 'lucide-react';
 
 /* ---------- small helpers ---------- */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const doc = document as any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const docEl = document.documentElement as any;
 
-function isFullscreen(): boolean {
-  return !!(doc.fullscreenElement || doc.webkitFullscreenElement);
-}
-async function enterFullscreen() {
-  try {
-    if (docEl.requestFullscreen) await docEl.requestFullscreen({ navigationUI: 'hide' });
-    else if (docEl.webkitRequestFullscreen) await docEl.webkitRequestFullscreen();
-  } catch { /* unsupported or refused */ }
-}
 async function leaveFullscreen() {
   try {
-    if (isFullscreen()) {
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
       if (doc.exitFullscreen) await doc.exitFullscreen();
       else if (doc.webkitExitFullscreen) await doc.webkitExitFullscreen();
     }
@@ -79,7 +68,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const [linkOverlay, setLinkOverlay] = useState<{ url: string; label: string } | null>(null);
   const [pdfOverlay, setPdfOverlay] = useState<{ url: string; label: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [fullscreen, setFullscreen] = useState(isFullscreen());
   const [rotating, setRotating] = useState(false);
   const [, setIsLandscape] = useState(readIsLandscape());
 
@@ -94,10 +82,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
     const prevHtmlOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
-
-    const onFs = () => setFullscreen(isFullscreen());
-    document.addEventListener('fullscreenchange', onFs);
-    document.addEventListener('webkitfullscreenchange', onFs);
 
     const onRotate = () => {
       const next = readIsLandscape();
@@ -122,8 +106,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       arDivRef.current = null;
       document.body.style.overflow = prevBodyOverflow;
       document.documentElement.style.overflow = prevHtmlOverflow;
-      document.removeEventListener('fullscreenchange', onFs);
-      document.removeEventListener('webkitfullscreenchange', onFs);
       window.removeEventListener('orientationchange', onRotate);
       window.removeEventListener('resize', onRotate);
       listenersRef.current.forEach(fn => fn());
@@ -489,10 +471,6 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
                 <UserCheck className="w-3.5 h-3.5" /> Sales team view
               </span>
             )}
-            <button onClick={() => (fullscreen ? leaveFullscreen() : enterFullscreen())} aria-label="Fullscreen"
-              className="w-11 h-11 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 shadow-lg active:scale-95 transition-transform">
-              {fullscreen ? <Minimize className="w-5 h-5 text-white" /> : <Maximize className="w-5 h-5 text-white" />}
-            </button>
           </div>
         </>
       )}
