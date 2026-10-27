@@ -5,7 +5,7 @@ import {
 } from '../lib/supabase';
 import { ArSession } from '../lib/analytics';
 import { isHttpUrl } from '../lib/validation';
-import { captureFrame, recogniseProduct, recordChoice, RecogniseResult } from '../lib/recognise';
+import { captureFrame, recogniseProduct, recordChoice, RecogniseResult, AUTO_OPEN_SCORE, warmRecogniser } from '../lib/recognise';
 import HotspotCard from '../components/HotspotCard';
 import LinkOverlay from '../components/LinkOverlay';
 import PdfOverlay from '../components/PdfOverlay';
@@ -78,6 +78,9 @@ export default function FloorPage() {
   // Pull-up list of every feature, used when the tiles are filtered to one side.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isLandscape, setIsLandscape] = useState(readIsLandscape());
+  // After an automatic open: the recognition it came from, for the "Not this?" toast.
+  const [autoOpened, setAutoOpened] = useState<{ result: RecogniseResult; productId: string; score: number } | null>(null);
+  const lastWarm = useRef(0);
 
   const brandColor = tenant?.brand_color ?? '#0A2463';
   const askEnabled = !!tenant && tenant.assistant_scope !== 'off';
@@ -88,6 +91,13 @@ export default function FloorPage() {
     const prevBody = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const onRotate = () => setIsLandscape(readIsLandscape());
+    // Re-warm when the salesperson comes back to the app after a while.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && tenantSlug && Date.now() - lastWarm.current > 10 * 60_000) {
+        lastWarm.current = Date.now(); warmRecogniser(tenantSlug);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('orientationchange', onRotate);
     window.addEventListener('resize', onRotate);
     const so = (screen as Screen & { orientation?: EventTarget }).orientation;
@@ -99,6 +109,8 @@ export default function FloorPage() {
       const { data: ps } = await supabase.from('products').select('*').eq('tenant_id', t.id).eq('is_active', true).eq('floor_enabled', true).order('display_order');
       setProducts(ps ?? []);
       try { setLastSlug(localStorage.getItem(storageKey)); } catch { /* private mode */ }
+      // Load the catalogue into the recogniser while the camera starts, so the first tap is fast.
+      if ((ps ?? []).length) { warmRecogniser(t.slug); lastWarm.current = Date.now(); }
       await openCamera(t);
     })();
     return () => {
@@ -106,6 +118,7 @@ export default function FloorPage() {
       window.removeEventListener('orientationchange', onRotate);
       window.removeEventListener('resize', onRotate);
       so?.removeEventListener?.('change', onRotate);
+      document.removeEventListener('visibilitychange', onVisible);
       stopCamera();
       window.speechSynthesis?.cancel();
       if (autoOpenTimer.current) clearTimeout(autoOpenTimer.current);
@@ -158,12 +171,14 @@ export default function FloorPage() {
     if (navigator.vibrate) navigator.vibrate(30);
     try {
       const r = await recogniseProduct({ tenant_slug: tenant.slug, image, team: true, session_id: sessionRef.current?.sessionId });
-      setResult(r);
       setView(r.view ?? 'any');
       const top = r.candidates[0];
-      if (top && top.confidence === 'high') {
-        // Opens by itself after a moment; "Not this?" cancels.
-        autoOpenTimer.current = setTimeout(() => { autoOpenTimer.current = null; choose(top.product_id, r.id); }, 1600);
+      if (top && top.score >= AUTO_OPEN_SCORE) {
+        // Sure enough: straight to the hotspots. A small "Not this?" toast offers the way back.
+        await choose(top.product_id, r.id, r.view);
+        setAutoOpened({ result: r, productId: top.product_id, score: top.score });
+      } else {
+        setResult(r);
       }
     } catch (err) {
       setResultError(err instanceof Error ? err.message : 'Could not recognise the product.');
@@ -187,7 +202,7 @@ export default function FloorPage() {
       const r = await recogniseProduct({ tenant_slug: tenant.slug, image, team: true, session_id: sessionRef.current?.sessionId });
       setView(r.view ?? 'any');
       const top = r.candidates[0];
-      if (top && top.confidence === 'high' && top.product_id !== product.id) {
+      if (top && top.score >= AUTO_OPEN_SCORE && top.product_id !== product.id) {
         const p = products.find(x => x.id === top.product_id);
         if (p) { recordChoice(r.id, p.id); await openProduct(p); }
       } else {
@@ -202,13 +217,25 @@ export default function FloorPage() {
     if (autoOpenTimer.current) { clearTimeout(autoOpenTimer.current); autoOpenTimer.current = null; }
   }
 
-  async function choose(productId: string, recognitionId?: string) {
+  async function choose(productId: string, recognitionId?: string, keepView?: string) {
     cancelAutoOpen();
     const p = products.find(x => x.id === productId);
     if (!p) return;
     recordChoice(recognitionId, productId);
-    setResult(null); setShowGrid(false); setPopup(null);
+    setResult(null); setShowGrid(false); setPopup(null); setAutoOpened(null);
     await openProduct(p);
+    if (keepView) setView(keepView);
+  }
+
+  /** "Not this?" after an automatic open: back to the other candidates, or the product list. */
+  function notThis() {
+    const a = autoOpened;
+    setAutoOpened(null);
+    closeProduct();
+    if (!a) return;
+    const others = a.result.candidates.filter(c => c.product_id !== a.productId);
+    if (others.length) setResult({ ...a.result, candidates: others });
+    else setShowGrid(true);
   }
 
   /* ---------- product ---------- */
@@ -242,7 +269,7 @@ export default function FloorPage() {
     window.speechSynthesis?.cancel();
     setProduct(null); setBundle(null); bundleRef.current = null; sessionRef.current = null;
     setPopup(null); setAsking(false); setLinkOverlay(null); setPdfOverlay(null);
-    setView('any'); setDrawerOpen(false);
+    setView('any'); setDrawerOpen(false); setAutoOpened(null);
   }
 
   function tapHotspot(h: Hotspot) {
@@ -303,6 +330,12 @@ export default function FloorPage() {
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
     setShareOpen(false);
   }
+
+  useEffect(() => {
+    if (!autoOpened) return;
+    const t = setTimeout(() => setAutoOpened(null), 7000);
+    return () => clearTimeout(t);
+  }, [autoOpened]);
 
   /* ---------- render ---------- */
 
@@ -419,7 +452,7 @@ export default function FloorPage() {
                 ) : (
                   <>
                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">
-                      {result!.candidates[0].confidence === 'high' ? 'Opening…' : 'Is it one of these?'}
+                      Is it one of these?
                     </p>
                     <div className="space-y-2 mb-3">
                       {result!.candidates.map((c, i) => (
@@ -432,7 +465,7 @@ export default function FloorPage() {
                             <p className="text-sm font-bold text-slate-900 truncate">{c.name}</p>
                             <p className="text-[11px] text-slate-500 line-clamp-2">{c.reason}</p>
                           </div>
-                          {i === 0 && c.confidence === 'high' && <Check className="w-5 h-5 flex-shrink-0" style={{ color: brandColor }} />}
+                          <span className="text-[11px] font-black text-slate-400 flex-shrink-0">{c.score}%</span>
                         </button>
                       ))}
                     </div>
@@ -442,7 +475,7 @@ export default function FloorPage() {
                 <div className="flex gap-2">
                   <button onClick={() => { cancelAutoOpen(); setResult(null); setResultError(''); }}
                     className="flex-1 text-sm font-bold py-2.5 rounded-xl bg-slate-100 text-slate-700">
-                    {result?.candidates[0]?.confidence === 'high' ? 'Not this?' : 'Try again'}
+                    Try again
                   </button>
                   <button onClick={() => { cancelAutoOpen(); setShowGrid(true); }}
                     className="flex-1 text-sm font-bold py-2.5 rounded-xl text-white inline-flex items-center justify-center gap-1.5" style={{ backgroundColor: brandColor }}>
@@ -496,6 +529,16 @@ export default function FloorPage() {
                 <Share2 className="w-5 h-5" />
               </button>
             </div>
+
+            {/* After an automatic open: what it matched, with a way back */}
+            {autoOpened && autoOpened.productId === product.id && (
+              <div className="absolute top-[4.6rem] left-0 right-0 flex justify-center px-3 land:pr-28 z-10">
+                <div className="inline-flex items-center gap-2 bg-black/65 backdrop-blur-md text-white text-xs font-semibold pl-3 pr-1 py-1 rounded-full border border-white/15 shadow-lg animate-card-in">
+                  <Check className="w-3.5 h-3.5 text-emerald-400" /> Recognised · {autoOpened.score}%
+                  <button onClick={notThis} className="ml-1 bg-white/15 hover:bg-white/25 px-2.5 py-1 rounded-full font-bold">Not this?</button>
+                </div>
+              </div>
+            )}
 
             {/* Status in the middle of the canvas, only while nothing can be shown */}
             {!bundle && !bundleError && (

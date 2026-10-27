@@ -2,6 +2,8 @@ import { supabase } from './supabase';
 
 export type RecogniseCandidate = {
   product_id: string; slug: string; name: string; thumbnail_url: string | null;
+  /** 0-100: how sure the model is. */
+  score: number;
   confidence: 'high' | 'medium' | 'low'; reason: string;
 };
 export type RecogniseResult = {
@@ -9,12 +11,14 @@ export type RecogniseResult = {
   candidates: RecogniseCandidate[];
   label_text: string;
   confidence: 'high' | 'medium' | 'low' | 'none';
+  /** Score of the top candidate, 0 when there is none. */
+  score: number;
   /** Side of the product in the photo, one of the PRODUCT_VIEWS values, or 'any'. */
   view: string;
 };
 
 /** Grabs the current camera frame as a JPEG (longest side ≤ maxSide), base64 without the data: prefix. */
-export function captureFrame(video: HTMLVideoElement, maxSide = 800, quality = 0.75): string | null {
+export function captureFrame(video: HTMLVideoElement, maxSide = 768, quality = 0.72): string | null {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return null;
   const scale = Math.min(1, maxSide / Math.max(vw, vh));
@@ -46,4 +50,15 @@ export function recordChoice(recognitionId: string | undefined, productId: strin
   void supabase.rpc('set_recognition_choice', { rid: recognitionId, pid: productId }).then(({ error }) => {
     if (error) console.warn('recognition choice', error.message);
   });
+}
+
+/** At or above this score the floor app opens the product without asking. */
+export const AUTO_OPEN_SCORE = 75;
+
+/**
+ * Loads the client's catalogue and reference photos into the recognise function
+ * and primes the model's prompt cache, so the first tap is fast. Fire and forget.
+ */
+export function warmRecogniser(tenant_slug: string) {
+  void supabase.functions.invoke('recognise', { body: { tenant_slug, warm: true } }).catch(() => {});
 }

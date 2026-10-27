@@ -87,7 +87,8 @@ export type Product = {
   created_at: string;
 };
 
-export type ReferenceImage = { url: string; view: ProductView };
+/** kb = stored size after in-browser compression; missing on photos added before compression existed. */
+export type ReferenceImage = { url: string; view: ProductView; kb?: number };
 
 /** Sides of a product a hotspot or photo can belong to. 'any' = not tied to a side. */
 export type ProductView = 'any' | 'front' | 'rear' | 'side' | 'interior' | 'dashboard' | 'boot' | 'engine' | 'wheels' | 'top' | 'display' | 'label';
@@ -107,7 +108,7 @@ export const PRODUCT_VIEWS: { value: ProductView; label: string }[] = [
 ];
 export const viewLabel = (v: string | null | undefined) => PRODUCT_VIEWS.find(x => x.value === v)?.label ?? 'Anywhere';
 export function normaliseReference(r: string | ReferenceImage): ReferenceImage {
-  return typeof r === 'string' ? { url: r, view: 'any' } : { url: r.url, view: r.view ?? 'any' };
+  return typeof r === 'string' ? { url: r, view: 'any' } : { url: r.url, view: r.view ?? 'any', ...(r.kb ? { kb: r.kb } : {}) };
 }
 
 export type Recognition = {

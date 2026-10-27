@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { supabase, Product, ReferenceImage, ProductView, PRODUCT_VIEWS, normaliseReference } from '../lib/supabase';
 import { uploadFile, removeFiles, pathFromPublicUrl } from '../lib/storage';
 import { fileTooLarge, MAX_IMAGE_BYTES } from '../lib/validation';
-import { ScanSearch, Upload, Trash2, Check } from 'lucide-react';
+import { compressImage, compressFromUrl, IMAGE_PRESETS, formatKB } from '../lib/image';
+import { ScanSearch, Upload, Trash2, Check, Minimize2 } from 'lucide-react';
 
 const MAX_PHOTOS = 12;
 const PHOTO_VIEWS = PRODUCT_VIEWS.filter(v => v.value !== 'any');
@@ -40,9 +41,9 @@ export default function RecognitionPanel({ product, storageBase, editable, onErr
         const f = list[i];
         setBusy(`Uploading ${i + 1} of ${list.length}…`);
         if (fileTooLarge(f, MAX_IMAGE_BYTES)) { onError(`${f.name} is too large.`); continue; }
-        const resized = await downscale(f, 1024);
-        const url = await uploadFile(`${storageBase}/reference/${Date.now()}-${next.length}.jpg`, resized, 'image/jpeg');
-        next.push({ url: url.split('?')[0], view: 'any' });
+        const small = await compressImage(f, IMAGE_PRESETS.reference);
+        const url = await uploadFile(`${storageBase}/reference/${Date.now()}-${next.length}.jpg`, small, 'image/jpeg');
+        next.push({ url: url.split('?')[0], view: 'any', kb: Math.round(small.size / 1024) });
       }
       setImages(next);
       await persist({ reference_images: next });
@@ -65,7 +66,34 @@ export default function RecognitionPanel({ product, storageBase, editable, onErr
     await removeFiles([pathFromPublicUrl(url)]);
   }
 
+  /** Re-saves photos added before compression existed, keeping their side tags. */
+  async function compressOlder() {
+    if (!editable) return;
+    const older = images.filter(r => !r.kb);
+    let before = 0, after = 0;
+    try {
+      const next = [...images];
+      for (let i = 0; i < older.length; i++) {
+        setBusy(`Compressing ${i + 1} of ${older.length}…`);
+        const r = older[i];
+        const { blob, before: b } = await compressFromUrl(r.url, IMAGE_PRESETS.reference);
+        const url = (await uploadFile(`${storageBase}/reference/${Date.now()}-${i}.jpg`, blob, 'image/jpeg')).split('?')[0];
+        before += b; after += blob.size;
+        const k = next.findIndex(x => x.url === r.url);
+        if (k >= 0) next[k] = { url, view: r.view, kb: Math.round(blob.size / 1024) };
+        await removeFiles([pathFromPublicUrl(r.url)]);
+      }
+      setImages(next);
+      await persist({ reference_images: next });
+      if (older.length) onError(`Compressed ${older.length} photo${older.length > 1 ? 's' : ''}: ${formatKB(before)} → ${formatKB(after)}.`);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Compression failed.');
+    } finally { setBusy(''); }
+  }
+
   const untagged = images.filter(r => r.view === 'any').length;
+  const olderCount = images.filter(r => !r.kb).length;
+  const totalKB = images.reduce((n, r) => n + (r.kb ?? 0), 0);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-5">
@@ -81,13 +109,27 @@ export default function RecognitionPanel({ product, storageBase, editable, onErr
         The floor app lets a salesperson point the phone at the real product and open these hotspots. Add photos of the product as it
         stands in the showroom — one for each side a salesperson might point at — and tag each with its side. Up to {MAX_PHOTOS}.
         {untagged > 0 && <span className="text-amber-700 font-semibold"> {untagged} photo{untagged > 1 ? 's' : ''} not tagged yet.</span>}
+        {images.length > 0 && olderCount === 0 && <span className="text-slate-400"> Total {formatKB(totalKB * 1024)}.</span>}
       </p>
+
+      {editable && olderCount > 0 && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 mb-4">
+          <p className="text-xs text-amber-900 flex-1">
+            {olderCount} photo{olderCount > 1 ? 's were' : ' was'} added before compression and may be large. Compressing makes recognition faster.
+          </p>
+          <button onClick={compressOlder} disabled={!!busy}
+            className="inline-flex items-center gap-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-50 text-white text-xs font-bold px-3 py-2 rounded-lg flex-shrink-0">
+            <Minimize2 className="w-3.5 h-3.5" /> {busy && busy.startsWith('Compressing') ? busy : 'Compress now'}
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-3 md:grid-cols-4 gap-2 mb-4">
         {images.map(r => (
           <div key={r.url} className="rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
             <div className="relative aspect-[4/3] group">
-              <img src={r.url} alt="" className="w-full h-full object-cover" />
+              <img src={r.url} alt="" className="w-full h-full object-cover" loading="lazy" />
+              {r.kb ? <span className="absolute bottom-1 left-1 text-[9px] font-bold bg-black/55 text-white px-1.5 py-0.5 rounded">{r.kb} KB</span> : null}
               {editable && (
                 <button onClick={() => removePhoto(r.url)} className="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
                   <Trash2 className="w-3.5 h-3.5" />
@@ -126,20 +168,4 @@ export default function RecognitionPanel({ product, storageBase, editable, onErr
       )}
     </div>
   );
-}
-
-/** Shrinks a photo in the browser so uploads stay small and the model gets a clean JPEG. */
-async function downscale(file: File, maxSide: number): Promise<Blob> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = new Image();
-    img.src = url;
-    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
-    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(img.naturalWidth * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return await new Promise<Blob>((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('Could not read the photo.')), 'image/jpeg', 0.85));
-  } finally { URL.revokeObjectURL(url); }
 }

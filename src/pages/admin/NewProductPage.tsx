@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from '../../lib/router';
+import { compressImage, IMAGE_PRESETS } from '../../lib/image';
 import { supabase, Tenant } from '../../lib/supabase';
-import { uploadFile, fileExtension } from '../../lib/storage';
+import { uploadFile } from '../../lib/storage';
 import { toSlug, slugError, fileTooLarge, MAX_IMAGE_BYTES } from '../../lib/validation';
 import { ArrowLeft, Upload } from 'lucide-react';
 
@@ -30,7 +31,9 @@ export default function NewProductPage() {
         .insert({ ...form, name: form.name.trim(), description: form.description.trim() || null, tenant_id: clientId }).select().single();
       if (err) throw err.code === '23505' ? new Error('This client already has a product with that slug.') : err;
       if (thumbFile && product) {
-        const thumbnail_url = await uploadFile(`${clientId}/products/${product.id}/thumbnail.${fileExtension(thumbFile, 'jpg')}`, thumbFile);
+        // Thumbnails show on the floor app: keep them small.
+        const small = await compressImage(thumbFile, IMAGE_PRESETS.thumbnail);
+        const thumbnail_url = await uploadFile(`${clientId}/products/${product.id}/thumbnail.jpg`, small, 'image/jpeg');
         await supabase.from('products').update({ thumbnail_url }).eq('id', product.id);
       }
       navigate(`/admin/clients/${clientId}`);
