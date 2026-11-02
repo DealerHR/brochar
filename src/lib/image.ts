@@ -8,6 +8,8 @@ export const IMAGE_PRESETS = {
   reference: { maxSide: 640, quality: 0.78 },
   /** Product thumbnails shown in the floor app and on the client page. */
   thumbnail: { maxSide: 800, quality: 0.8 },
+  /** Brochure pages: big enough for AR target tracking, small enough to not crash a tab. */
+  page: { maxSide: 1600, quality: 0.85 },
 } as const;
 
 async function decode(src: Blob): Promise<{ draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void; width: number; height: number; close: () => void }> {

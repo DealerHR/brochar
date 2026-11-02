@@ -7,7 +7,8 @@ import KnowledgePanel from '../../components/KnowledgePanel';
 import RecognitionPanel from '../../components/RecognitionPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { MINDAR_CDN, loadScript, withMindARWorkers, requireMindAR } from '../../lib/mindar';
-import { uploadFile, removeFiles, pathFromPublicUrl, fileExtension } from '../../lib/storage';
+import { uploadFile, removeFiles, pathFromPublicUrl } from '../../lib/storage';
+import { compressImage, IMAGE_PRESETS } from '../../lib/image';
 import { hexColorError, youtubeId, fileTooLarge, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from '../../lib/validation';
 import {
   ArrowLeft, FileImage, Trash2, Plus, X, Save,
@@ -161,10 +162,12 @@ export default function ProductBuilderPage() {
   }
 
   async function uploadImage(file: File | Blob, brochureId: string, pageIndex: number) {
+    // Shrink in the browser first: a full-size phone photo can exhaust the tab's
+    // memory (the browser then reloads the page) and slows target compilation.
+    const small = await compressImage(file, IMAGE_PRESETS.page);
     // Unique object name per page so a re-upload can never overwrite another page.
-    const ext = file instanceof File ? fileExtension(file, 'jpg') : 'jpg';
-    const path = `${clientId}/${productId}/pages/${newId()}.${ext}`;
-    const image_url = await uploadFile(path, file, file.type || 'image/jpeg');
+    const path = `${clientId}/${productId}/pages/${newId()}.jpg`;
+    const image_url = await uploadFile(path, small, 'image/jpeg');
     const { error } = await supabase.from('brochure_pages').insert({ brochure_id: brochureId, page_index: pageIndex, image_url });
     if (error) { await removeFiles([path]); throw new Error(error.message); }
   }
@@ -201,7 +204,7 @@ export default function ProductBuilderPage() {
     const rect = imageRef.current!.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
-    const { data } = await supabase.from('hotspots').insert({
+    const { data, error } = await supabase.from('hotspots').insert({
       page_id: selectedPage.id,
       label: 'New Hotspot',
       pos_x: parseFloat(x.toFixed(2)),
@@ -211,6 +214,7 @@ export default function ProductBuilderPage() {
       video_type: 'none',
       display_order: (hotspots[selectedPage.id]?.length ?? 0),
     }).select().single();
+    if (error) { setNotice(`Could not add the hotspot: ${error.message}`); setPlacingMode(false); return; }
     if (data) {
       setHotspots(h => ({ ...h, [selectedPage.id]: [...(h[selectedPage.id] ?? []), data] }));
       openHotspot(data);
