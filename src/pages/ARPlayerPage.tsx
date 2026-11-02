@@ -87,12 +87,25 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
   const [rotating, setRotating] = useState(false);
   const [, setIsLandscape] = useState(readIsLandscape());
 
+  const fullscreenAsked = useRef(false);
+
   /* mount: AR container, scroll lock, load + auto-start */
   useEffect(() => {
     const div = document.createElement('div');
     div.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;background:#000;z-index:0;';
     document.body.appendChild(div);
     arDivRef.current = div;
+
+    // Browsers only let us enter fullscreen from a user gesture. The AR engine's own
+    // touch listener is registered only after the camera starts, so a tap on the loading
+    // or camera-denied screen (or a mouse click) would otherwise miss it. Catch the very
+    // first pointer interaction anywhere, in any phase, like the floor app does.
+    const firstGesture = () => {
+      if (fullscreenAsked.current) return;
+      fullscreenAsked.current = true;
+      void enterFullscreen().then(() => resyncRef.current());
+    };
+    window.addEventListener('pointerdown', firstGesture, { once: true, passive: true });
 
     const prevBodyOverflow = document.body.style.overflow;
     const prevHtmlOverflow = document.documentElement.style.overflow;
@@ -381,8 +394,9 @@ export default function ARPlayerPage({ teamMode = false }: { teamMode?: boolean 
       let askedFullscreen = false;
       const touchStartH = (e: TouchEvent) => { const t = e.touches[0]; if (t) { touchStartX = t.clientX; touchStartY = t.clientY; } };
       const touchEndH = (e: TouchEvent) => {
-        // The first tap is the earliest moment a browser lets us go fullscreen.
-        if (!askedFullscreen) { askedFullscreen = true; enterFullscreen().then(resync); }
+        // The first tap also triggers the page-level fullscreen request; here we just
+        // keep the flag so later taps do not re-arm it.
+        if (!askedFullscreen) { askedFullscreen = true; }
         const t = e.changedTouches[0];
         if (t && Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY) < 12) onTap(t.clientX, t.clientY);
       };
