@@ -57,7 +57,7 @@ export default function BlockView({ block, tenant, brandColor, fallbackSpeech, a
         return (
           <div className="rounded-xl overflow-hidden bg-black aspect-video">
             <iframe
-              src={`https://www.youtube-nocookie.com/embed/${id}?rel=0&playsinline=1${auto ? '&autoplay=1' : ''}`}
+              src={`https://www.youtube-nocookie.com/embed/${id}?rel=0&playsinline=1${auto ? '&autoplay=1&mute=1' : ''}`}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowFullScreen className="w-full h-full border-0" title="Video" onLoad={() => { if (auto) onMedia?.(); }} />
           </div>
